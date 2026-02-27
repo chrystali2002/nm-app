@@ -1095,7 +1095,7 @@ if 'all_station_stats' in st.session_state:
         else:
             st.warning("No station statistics available")
     
-      with tab4:
+    with tab4:
         st.subheader("Flag Pattern Analysis")
         
         if st.session_state.all_flag_analyses is not None and not st.session_state.all_flag_analyses.empty:
