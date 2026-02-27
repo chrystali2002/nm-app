@@ -681,48 +681,94 @@ if 'all_station_stats' in st.session_state:
     with tab1:
         st.subheader("Station Overview")
         
-        # Merge all statistics
-        overview_df = pd.merge(
-            st.session_state.all_station_stats,
-            st.session_state.all_comparisons,
-            on='station_name'
-        )
+        # Check if both DataFrames exist and have the station_name column
+        if st.session_state.all_station_stats is not None and st.session_state.all_comparisons is not None:
+            # Ensure station_name column exists in both DataFrames
+            if 'station_name' in st.session_state.all_station_stats.columns and 'station_name' in st.session_state.all_comparisons.columns:
+                # Merge all statistics
+                overview_df = pd.merge(
+                    st.session_state.all_station_stats,
+                    st.session_state.all_comparisons,
+                    on='station_name',
+                    how='outer'  # Use outer join to keep all records
+                )
+            else:
+                # If station_name is missing, use index or create a default
+                st.warning("Station name column missing in some data. Using index for merging.")
+                overview_df = pd.concat([
+                    st.session_state.all_station_stats.reset_index(drop=True),
+                    st.session_state.all_comparisons.reset_index(drop=True)
+                ], axis=1)
+        else:
+            st.error("Missing data for overview")
+            st.stop()
         
         # Display key metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Stations", len(overview_df))
         with col2:
-            st.metric("Avg Flag %", f"{overview_df['final_flag_pct'].mean():.1f}%")
+            avg_flag = overview_df['final_flag_pct'].mean() if 'final_flag_pct' in overview_df.columns else 0
+            st.metric("Avg Flag %", f"{avg_flag:.1f}%")
         with col3:
-            st.metric("Avg Data Loss", f"{overview_df['data_loss_pct'].mean():.1f}%")
+            avg_loss = overview_df['data_loss_pct'].mean() if 'data_loss_pct' in overview_df.columns else 0
+            st.metric("Avg Data Loss", f"{avg_loss:.1f}%")
         with col4:
-            st.metric("Total Points", f"{overview_df['total_points'].sum():,}")
+            total_points = overview_df['total_points'].sum() if 'total_points' in overview_df.columns else 0
+            st.metric("Total Points", f"{total_points:,}")
         
         # Display station table with decision
-        display_cols = ['station_name', 'neighbor_dist', 'total_points', 'final_flag_pct', 
-                       'dominant_flag', 'secondary_flag', 'decision',
-                       'data_loss_pct', 'heatwave_count']
+        display_cols = []
+        available_cols = overview_df.columns.tolist()
         
-        # Color code based on decision
-        df_display = overview_df[display_cols].copy()
+        # Build display columns based on what's available
+        col_mapping = {
+            'station_name': 'station_name',
+            'neighbor_dist': 'neighbor_dist',
+            'total_points': 'total_points',
+            'final_flag_pct': 'final_flag_pct',
+            'dominant_flag': 'dominant_flag',
+            'secondary_flag': 'secondary_flag',
+            'decision': 'decision',
+            'data_loss_pct': 'data_loss_pct',
+            'heatwave_count': 'heatwave_count'
+        }
         
-        def color_decision(val):
-            if 'REMOVE' in str(val):
-                return 'background-color: #ffcccc'
-            elif 'RETAIN' in str(val):
-                return 'background-color: #ccffcc'
-            elif 'CAUTION' in str(val):
-                return 'background-color: #ffffcc'
+        for display_name, col_name in col_mapping.items():
+            if col_name in available_cols:
+                display_cols.append(col_name)
+        
+        if display_cols:
+            df_display = overview_df[display_cols].copy()
+            
+            # Color code based on decision if decision column exists
+            if 'decision' in df_display.columns:
+                def color_decision(val):
+                    if pd.isna(val):
+                        return ''
+                    if 'REMOVE' in str(val):
+                        return 'background-color: #ffcccc'
+                    elif 'RETAIN' in str(val):
+                        return 'background-color: #ccffcc'
+                    elif 'CAUTION' in str(val):
+                        return 'background-color: #ffffcc'
+                    else:
+                        return ''
+                
+                # Sort by flag percentage if available
+                if 'final_flag_pct' in df_display.columns:
+                    df_display = df_display.sort_values('final_flag_pct', ascending=False)
+                
+                styled_df = df_display.style.applymap(color_decision, subset=['decision'])
+                st.dataframe(styled_df, use_container_width=True)
             else:
-                return ''
-        
-        st.dataframe(
-            df_display.sort_values('final_flag_pct', ascending=False).style.applymap(
-                color_decision, subset=['decision']
-            ),
-            use_container_width=True
-        )
+                # Sort by flag percentage if available
+                if 'final_flag_pct' in df_display.columns:
+                    df_display = df_display.sort_values('final_flag_pct', ascending=False)
+                st.dataframe(df_display, use_container_width=True)
+        else:
+            st.warning("No display columns available")
+            st.dataframe(overview_df)
         
         # Download button
         csv = overview_df.to_csv(index=False)
@@ -736,445 +782,534 @@ if 'all_station_stats' in st.session_state:
     with tab2:
         st.subheader("Individual Station Analysis")
         
-        # Station selector
-        selected_station = st.selectbox(
-            "Select Station for Detailed Analysis",
-            options=sorted(list(st.session_state.results.keys()))
-        )
-        
-        if selected_station:
-            station_data = st.session_state.results[selected_station]
-            station_stats = station_data['flag_stats']
-            
-            # Display station info with decision
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Points", f"{station_stats['total_points']:,}")
-            with col2:
-                st.metric("Flagged Points", f"{station_stats['final_flag_count']:,}")
-            with col3:
-                st.metric("Flag Percentage", f"{station_stats['final_flag_pct']:.1f}%")
-            with col4:
-                decision_color = "🔴" if "REMOVE" in station_stats['decision'] else "🟢" if "RETAIN" in station_stats['decision'] else "🟡"
-                st.metric("Decision", f"{decision_color} {station_stats['decision']}")
-            
-            st.info(f"**Decision Matrix Result:** {station_stats['decision']} based on dominant flag '{station_stats['dominant_flag']}' ({station_stats['dominant_flag_pct']:.1f}%) and secondary flag '{station_stats['secondary_flag']}' ({station_stats['secondary_flag_pct']:.1f}%)")
-            
-            # Create enhanced plot for selected station
-            safe_name = sanitize_filename(selected_station)
-            
-            fig = plt.figure(figsize=(16, 12))
-            gs = gridspec.GridSpec(3, 2, height_ratios=[2, 1, 1])
-            
-            # Main QA/QC plot
-            ax1 = plt.subplot(gs[0, :])
-            
-            df_primary = station_data['df_primary']
-            df_validated = station_data['df_validated']
-            flags_df = station_data['flags_df']
-            
-            ax1.plot(df_primary.index, df_primary['T_air'], 
-                    color='lightgray', alpha=0.7, label='Raw', linewidth=0.5)
-            ax1.plot(df_primary.index, df_validated, 
-                    color='tab:blue', label='Validated', linewidth=1)
-            
-            flagged_idx = df_primary.index[df_primary['final_flag']]
-            flagged_vals = df_primary.loc[df_primary['final_flag'], 'T_air']
-            ax1.scatter(flagged_idx, flagged_vals, 
-                       color='red', s=8, alpha=0.6, label='Flagged', zorder=5)
-            
-            extreme_idx = df_primary.index[df_primary['heatwave']]
-            if len(extreme_idx) > 0:
-                extreme_vals = df_primary.loc[df_primary['heatwave'], 'T_air']
-                ax1.scatter(extreme_idx, extreme_vals, 
-                           color='orange', s=15, alpha=0.4, label='Extreme heat (>40°C)', zorder=4)
-            
-            ax1.axhspan(40, 55, color='orange', alpha=0.1, label='Extreme preserved zone')
-            
-            stats_text = (
-                f"Total points: {station_stats['total_points']:,}\n"
-                f"Flagged: {station_stats['final_flag_count']:,} ({station_stats['final_flag_pct']:.1f}%)\n"
-                f"Range flags: {station_stats['flag_range_count']:,}\n"
-                f"Spike flags: {station_stats['flag_spike_count']:,}\n"
-                f"Flatline flags: {station_stats['flag_flat_count']:,}\n"
-                f"Spatial flags: {station_stats['flag_spatial_count']:,}\n"
-                f"Heatwaves: {station_stats['heatwave_count']:,}\n"
-                f"Neighbor: {station_data['neighbor_name']} ({station_data['dist_km']:.1f} km)\n"
-                f"Decision: {station_stats['decision']}"
+        # Check if results exist
+        if st.session_state.results and len(st.session_state.results) > 0:
+            # Station selector
+            selected_station = st.selectbox(
+                "Select Station for Detailed Analysis",
+                options=sorted(list(st.session_state.results.keys()))
             )
             
-            ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes,
-                    fontsize=9, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            ax1.set_ylabel('Air Temperature (°C)')
-            ax1.set_title(f"{st.session_state.first_year} - {selected_station} - Hourly Temperature with QA/QC")
-            ax1.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=9)
-            ax1.grid(True, alpha=0.3)
-            
-            # Monthly flag percentage
-            ax2 = plt.subplot(gs[1, 0])
-            seasonal_stats = analyze_seasonal_patterns(df_primary, flags_df)
-            
-            if not seasonal_stats.empty:
-                month_labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                months = seasonal_stats['month'].values
-                flag_pcts = seasonal_stats['flag_pct'].values
+            if selected_station:
+                station_data = st.session_state.results[selected_station]
+                station_stats = station_data.get('flag_stats', {})
                 
-                x_positions = np.arange(len(months))
-                ax2.bar(x_positions, flag_pcts, color='skyblue', edgecolor='navy', alpha=0.7)
-                ax2.set_xlabel('Month')
-                ax2.set_ylabel('Flag Percentage (%)')
-                ax2.set_title('Monthly Flag Distribution')
-                ax2.set_xticks(x_positions)
-                ax2.set_xticklabels([month_labels[int(m)-1] for m in months], rotation=45)
-                ax2.grid(True, alpha=0.3)
+                # Display station info with decision
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    total_points = station_stats.get('total_points', 0)
+                    st.metric("Total Points", f"{total_points:,}")
+                with col2:
+                    flagged_points = station_stats.get('final_flag_count', 0)
+                    st.metric("Flagged Points", f"{flagged_points:,}")
+                with col3:
+                    flag_pct = station_stats.get('final_flag_pct', 0)
+                    st.metric("Flag Percentage", f"{flag_pct:.1f}%")
+                with col4:
+                    decision = station_stats.get('decision', 'Unknown')
+                    decision_color = "🔴" if "REMOVE" in decision else "🟢" if "RETAIN" in decision else "🟡"
+                    st.metric("Decision", f"{decision_color} {decision}")
                 
-                if len(flag_pcts) > 0:
-                    max_idx = np.argmax(flag_pcts)
-                    max_month = months[max_idx]
-                    max_pct = flag_pcts[max_idx]
-                    ax2.text(0.02, 0.98, f"Max: {month_labels[int(max_month)-1]} ({max_pct:.1f}%)",
-                            transform=ax2.transAxes, fontsize=9,
-                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            # Flag type distribution
-            ax3 = plt.subplot(gs[1, 1])
-            flag_types = ['Range', 'Spike', 'Flatline', 'Spatial']
-            flag_counts = [
-                station_stats['flag_range_count'],
-                station_stats['flag_spike_count'],
-                station_stats['flag_flat_count'],
-                station_stats['flag_spatial_count']
-            ]
-            
-            if sum(flag_counts) > 0:
-                colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99']
-                non_zero_idx = [i for i, count in enumerate(flag_counts) if count > 0]
-                if len(non_zero_idx) > 0:
-                    non_zero_counts = [flag_counts[i] for i in non_zero_idx]
-                    non_zero_labels = [flag_types[i] for i in non_zero_idx]
-                    non_zero_colors = [colors[i] for i in non_zero_idx]
+                dominant_flag = station_stats.get('dominant_flag', 'Unknown')
+                dominant_pct = station_stats.get('dominant_flag_pct', 0)
+                secondary_flag = station_stats.get('secondary_flag', 'Unknown')
+                secondary_pct = station_stats.get('secondary_flag_pct', 0)
+                
+                st.info(f"**Decision Matrix Result:** {decision} based on dominant flag '{dominant_flag}' ({dominant_pct:.1f}%) and secondary flag '{secondary_flag}' ({secondary_pct:.1f}%)")
+                
+                # Check if we have data to plot
+                if 'df_primary' in station_data and station_data['df_primary'] is not None and not station_data['df_primary'].empty:
+                    # Create enhanced plot for selected station
+                    safe_name = sanitize_filename(selected_station)
                     
-                    wedges, texts, autotexts = ax3.pie(non_zero_counts, labels=non_zero_labels, 
-                                                       colors=non_zero_colors,
-                                                       autopct='%1.1f%%', startangle=90)
-                    ax3.set_title(f'Flag Distribution\nDominant: {station_stats["dominant_flag"]}')
-                else:
-                    ax3.text(0.5, 0.5, 'No flags\nfound', ha='center', va='center')
-                    ax3.set_title('Flag Type Distribution')
-            else:
-                ax3.text(0.5, 0.5, 'No flags\nfound', ha='center', va='center')
-                ax3.set_title('Flag Type Distribution')
-            
-            ax3.axis('equal')
-            
-            # Raw vs Validated comparison
-            ax4 = plt.subplot(gs[2, 0])
-            comparison_stats = station_data['comparison_stats']
-            
-            if len(df_primary) > 0 and len(df_validated.dropna()) > 0:
-                data_to_plot = [df_primary['T_air'].dropna(), df_validated.dropna()]
-                bp = ax4.boxplot(data_to_plot, patch_artist=True, labels=['Raw', 'Validated'])
-                
-                colors = ['lightgray', 'lightblue']
-                for patch, color in zip(bp['boxes'], colors):
-                    patch.set_facecolor(color)
-                
-                ax4.set_ylabel('Temperature (°C)')
-                ax4.set_title('Raw vs Validated Distribution')
-                ax4.grid(True, alpha=0.3)
-                
-                if not np.isnan(comparison_stats.get('mean_diff', np.nan)):
+                    fig = plt.figure(figsize=(16, 12))
+                    gs = gridspec.GridSpec(3, 2, height_ratios=[2, 1, 1])
+                    
+                    # Main QA/QC plot
+                    ax1 = plt.subplot(gs[0, :])
+                    
+                    df_primary = station_data['df_primary']
+                    df_validated = station_data.get('df_validated', pd.Series(index=df_primary.index))
+                    flags_df = station_data.get('flags_df', pd.DataFrame())
+                    
+                    ax1.plot(df_primary.index, df_primary['T_air'], 
+                            color='lightgray', alpha=0.7, label='Raw', linewidth=0.5)
+                    
+                    if df_validated is not None and not df_validated.empty:
+                        ax1.plot(df_primary.index, df_validated, 
+                                color='tab:blue', label='Validated', linewidth=1)
+                    
+                    if not flags_df.empty and 'final_flag' in flags_df.columns:
+                        flagged_idx = df_primary.index[flags_df['final_flag']]
+                        if len(flagged_idx) > 0:
+                            flagged_vals = df_primary.loc[flags_df['final_flag'], 'T_air']
+                            ax1.scatter(flagged_idx, flagged_vals, 
+                                       color='red', s=8, alpha=0.6, label='Flagged', zorder=5)
+                    
+                    if 'heatwave' in df_primary.columns:
+                        extreme_idx = df_primary.index[df_primary['heatwave']]
+                        if len(extreme_idx) > 0:
+                            extreme_vals = df_primary.loc[df_primary['heatwave'], 'T_air']
+                            ax1.scatter(extreme_idx, extreme_vals, 
+                                       color='orange', s=15, alpha=0.4, label='Extreme heat (>40°C)', zorder=4)
+                    
+                    ax1.axhspan(40, 55, color='orange', alpha=0.1, label='Extreme preserved zone')
+                    
                     stats_text = (
-                        f"Mean diff: {comparison_stats['mean_diff']:.2f}°C\n"
-                        f"Std diff: {comparison_stats['std_diff']:.2f}°C\n"
-                        f"Range diff: {comparison_stats['range_diff']:.2f}°C\n"
-                        f"Data loss: {comparison_stats['data_loss_pct']:.1f}%"
+                        f"Total points: {station_stats.get('total_points', 0):,}\n"
+                        f"Flagged: {station_stats.get('final_flag_count', 0):,} ({station_stats.get('final_flag_pct', 0):.1f}%)\n"
+                        f"Range flags: {station_stats.get('flag_range_count', 0):,}\n"
+                        f"Spike flags: {station_stats.get('flag_spike_count', 0):,}\n"
+                        f"Flatline flags: {station_stats.get('flag_flat_count', 0):,}\n"
+                        f"Spatial flags: {station_stats.get('flag_spatial_count', 0):,}\n"
+                        f"Heatwaves: {station_stats.get('heatwave_count', 0):,}\n"
+                        f"Neighbor: {station_data.get('neighbor_name', 'None')} ({station_data.get('dist_km', 0):.1f} km)\n"
+                        f"Decision: {station_stats.get('decision', 'Unknown')}"
                     )
-                    ax4.text(0.02, 0.98, stats_text, transform=ax4.transAxes,
+                    
+                    ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes,
                             fontsize=9, verticalalignment='top',
                             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            # Flag clustering
-            ax5 = plt.subplot(gs[2, 1])
-            clustering_stats = station_data['clustering_stats']
-            
-            if len(df_primary) > 0:
-                flag_series = df_primary['final_flag'].astype(int)
-                
-                if len(flag_series) >= 24:
-                    rolling_flags = flag_series.rolling(window=24).sum()
-                    ax5.plot(df_primary.index, rolling_flags, color='red', linewidth=1)
-                    ax5.fill_between(df_primary.index, 0, rolling_flags, color='red', alpha=0.3)
-                    ax5.set_ylabel('Flags in 24h window')
+                    
+                    ax1.set_ylabel('Air Temperature (°C)')
+                    ax1.set_title(f"{st.session_state.first_year} - {selected_station} - Hourly Temperature with QA/QC")
+                    ax1.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=9)
+                    ax1.grid(True, alpha=0.3)
+                    
+                    # Monthly flag percentage
+                    ax2 = plt.subplot(gs[1, 0])
+                    if not flags_df.empty:
+                        seasonal_stats = analyze_seasonal_patterns(df_primary, flags_df)
+                        
+                        if not seasonal_stats.empty:
+                            month_labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                            months = seasonal_stats['month'].values
+                            flag_pcts = seasonal_stats['flag_pct'].values
+                            
+                            x_positions = np.arange(len(months))
+                            ax2.bar(x_positions, flag_pcts, color='skyblue', edgecolor='navy', alpha=0.7)
+                            ax2.set_xlabel('Month')
+                            ax2.set_ylabel('Flag Percentage (%)')
+                            ax2.set_title('Monthly Flag Distribution')
+                            ax2.set_xticks(x_positions)
+                            ax2.set_xticklabels([month_labels[int(m)-1] for m in months], rotation=45)
+                            ax2.grid(True, alpha=0.3)
+                            
+                            if len(flag_pcts) > 0:
+                                max_idx = np.argmax(flag_pcts)
+                                max_month = months[max_idx]
+                                max_pct = flag_pcts[max_idx]
+                                ax2.text(0.02, 0.98, f"Max: {month_labels[int(max_month)-1]} ({max_pct:.1f}%)",
+                                        transform=ax2.transAxes, fontsize=9,
+                                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    
+                    # Flag type distribution
+                    ax3 = plt.subplot(gs[1, 1])
+                    flag_types = ['Range', 'Spike', 'Flatline', 'Spatial']
+                    flag_counts = [
+                        station_stats.get('flag_range_count', 0),
+                        station_stats.get('flag_spike_count', 0),
+                        station_stats.get('flag_flat_count', 0),
+                        station_stats.get('flag_spatial_count', 0)
+                    ]
+                    
+                    if sum(flag_counts) > 0:
+                        colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99']
+                        non_zero_idx = [i for i, count in enumerate(flag_counts) if count > 0]
+                        if len(non_zero_idx) > 0:
+                            non_zero_counts = [flag_counts[i] for i in non_zero_idx]
+                            non_zero_labels = [flag_types[i] for i in non_zero_idx]
+                            non_zero_colors = [colors[i] for i in non_zero_idx]
+                            
+                            wedges, texts, autotexts = ax3.pie(non_zero_counts, labels=non_zero_labels, 
+                                                               colors=non_zero_colors,
+                                                               autopct='%1.1f%%', startangle=90)
+                            ax3.set_title(f'Flag Distribution\nDominant: {station_stats.get("dominant_flag", "None")}')
+                        else:
+                            ax3.text(0.5, 0.5, 'No flags\nfound', ha='center', va='center')
+                            ax3.set_title('Flag Type Distribution')
+                    else:
+                        ax3.text(0.5, 0.5, 'No flags\nfound', ha='center', va='center')
+                        ax3.set_title('Flag Type Distribution')
+                    
+                    ax3.axis('equal')
+                    
+                    # Raw vs Validated comparison
+                    ax4 = plt.subplot(gs[2, 0])
+                    comparison_stats = station_data.get('comparison_stats', {})
+                    
+                    if df_validated is not None and not df_validated.empty and len(df_validated.dropna()) > 0:
+                        data_to_plot = [df_primary['T_air'].dropna(), df_validated.dropna()]
+                        bp = ax4.boxplot(data_to_plot, patch_artist=True, labels=['Raw', 'Validated'])
+                        
+                        colors = ['lightgray', 'lightblue']
+                        for patch, color in zip(bp['boxes'], colors):
+                            patch.set_facecolor(color)
+                        
+                        ax4.set_ylabel('Temperature (°C)')
+                        ax4.set_title('Raw vs Validated Distribution')
+                        ax4.grid(True, alpha=0.3)
+                        
+                        mean_diff = comparison_stats.get('mean_diff', np.nan)
+                        if not np.isnan(mean_diff):
+                            stats_text = (
+                                f"Mean diff: {mean_diff:.2f}°C\n"
+                                f"Std diff: {comparison_stats.get('std_diff', np.nan):.2f}°C\n"
+                                f"Range diff: {comparison_stats.get('range_diff', np.nan):.2f}°C\n"
+                                f"Data loss: {comparison_stats.get('data_loss_pct', 0):.1f}%"
+                            )
+                            ax4.text(0.02, 0.98, stats_text, transform=ax4.transAxes,
+                                    fontsize=9, verticalalignment='top',
+                                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    
+                    # Flag clustering
+                    ax5 = plt.subplot(gs[2, 1])
+                    clustering_stats = station_data.get('clustering_stats', {})
+                    
+                    if len(df_primary) > 0 and not flags_df.empty and 'final_flag' in flags_df.columns:
+                        flag_series = flags_df['final_flag'].astype(int)
+                        
+                        if len(flag_series) >= 24:
+                            rolling_flags = flag_series.rolling(window=24).sum()
+                            ax5.plot(df_primary.index, rolling_flags, color='red', linewidth=1)
+                            ax5.fill_between(df_primary.index, 0, rolling_flags, color='red', alpha=0.3)
+                            ax5.set_ylabel('Flags in 24h window')
+                        else:
+                            ax5.plot(df_primary.index, flag_series, color='red', linewidth=1)
+                            ax5.fill_between(df_primary.index, 0, flag_series, color='red', alpha=0.3)
+                            ax5.set_ylabel('Flags (binary)')
+                        
+                        ax5.set_xlabel('Date')
+                        ax5.set_title(f'Flag Clustering Analysis')
+                        ax5.grid(True, alpha=0.3)
+                        
+                        cluster_text = (
+                            f"Flag clusters: {clustering_stats.get('flag_clusters', 0)}\n"
+                            f"Max consecutive: {clustering_stats.get('max_consecutive_flags', 0)}\n"
+                            f"Autocorr (lag1): {clustering_stats.get('autocorrelation_lag1', np.nan):.3f}"
+                        )
+                        ax5.text(0.02, 0.98, cluster_text, transform=ax5.transAxes,
+                                fontsize=9, verticalalignment='top',
+                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close()
+                    
+                    # Download individual station plot
+                    buf = BytesIO()
+                    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                    buf.seek(0)
+                    
+                    st.download_button(
+                        label=f"📥 Download {selected_station} Analysis Plot",
+                        data=buf,
+                        file_name=f"{safe_name}_analysis_{st.session_state.first_year}.png",
+                        mime="image/png"
+                    )
                 else:
-                    ax5.plot(df_primary.index, flag_series, color='red', linewidth=1)
-                    ax5.fill_between(df_primary.index, 0, flag_series, color='red', alpha=0.3)
-                    ax5.set_ylabel('Flags (binary)')
+                    st.warning(f"No data available to plot for {selected_station}")
+        else:
+            st.warning("No station results available. Please run the analysis first.")
+    
+    with tab3:
+        st.subheader("Summary Statistics")
+        
+        if st.session_state.all_station_stats is not None and not st.session_state.all_station_stats.empty:
+            # Flag percentage distribution
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+            
+            # Histogram of flag percentages
+            ax1 = axes[0]
+            if 'final_flag_pct' in st.session_state.all_station_stats.columns:
+                flag_pcts = st.session_state.all_station_stats['final_flag_pct'].dropna()
                 
-                ax5.set_xlabel('Date')
-                ax5.set_title(f'Flag Clustering Analysis')
-                ax5.grid(True, alpha=0.3)
-                
-                cluster_text = (
-                    f"Flag clusters: {clustering_stats['flag_clusters']}\n"
-                    f"Max consecutive: {clustering_stats['max_consecutive_flags']}\n"
-                    f"Autocorr (lag1): {clustering_stats['autocorrelation_lag1']:.3f}"
+                if len(flag_pcts) > 0:
+                    ax1.hist(flag_pcts, bins=20, color='skyblue', edgecolor='navy', alpha=0.7)
+                    ax1.axvline(flag_pcts.mean(), color='red', linestyle='--', linewidth=2, 
+                               label=f"Mean: {flag_pcts.mean():.1f}%")
+                    ax1.axvline(flag_pcts.median(), color='green', linestyle='--', linewidth=2, 
+                               label=f"Median: {flag_pcts.median():.1f}%")
+                    ax1.set_xlabel('Flag Percentage (%)')
+                    ax1.set_ylabel('Number of Stations')
+                    ax1.set_title('Distribution of Flag Percentages')
+                    ax1.legend()
+                    ax1.grid(True, alpha=0.3)
+                    
+                    # Box plot of flag percentages
+                    ax2 = axes[1]
+                    bp = ax2.boxplot(flag_pcts, patch_artist=True)
+                    bp['boxes'][0].set_facecolor('lightblue')
+                    ax2.set_ylabel('Flag Percentage (%)')
+                    ax2.set_title('Box Plot of Flag Percentages')
+                    ax2.grid(True, alpha=0.3)
+                    ax2.set_xticklabels(['All Stations'])
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close()
+                    
+                    # Summary table
+                    summary_stats = pd.DataFrame({
+                        'Metric': ['Mean', 'Median', 'Std Dev', 'Min', 'Max', 'Q1', 'Q3'],
+                        'Flag %': [
+                            f"{flag_pcts.mean():.2f}",
+                            f"{flag_pcts.median():.2f}",
+                            f"{flag_pcts.std():.2f}",
+                            f"{flag_pcts.min():.2f}",
+                            f"{flag_pcts.max():.2f}",
+                            f"{flag_pcts.quantile(0.25):.2f}",
+                            f"{flag_pcts.quantile(0.75):.2f}"
+                        ]
+                    })
+                    
+                    # Add data loss stats if available
+                    if st.session_state.all_comparisons is not None and 'data_loss_pct' in st.session_state.all_comparisons.columns:
+                        loss_pcts = st.session_state.all_comparisons['data_loss_pct'].dropna()
+                        summary_stats['Data Loss %'] = [
+                            f"{loss_pcts.mean():.2f}" if len(loss_pcts) > 0 else "N/A",
+                            f"{loss_pcts.median():.2f}" if len(loss_pcts) > 0 else "N/A",
+                            f"{loss_pcts.std():.2f}" if len(loss_pcts) > 0 else "N/A",
+                            f"{loss_pcts.min():.2f}" if len(loss_pcts) > 0 else "N/A",
+                            f"{loss_pcts.max():.2f}" if len(loss_pcts) > 0 else "N/A",
+                            f"{loss_pcts.quantile(0.25):.2f}" if len(loss_pcts) > 0 else "N/A",
+                            f"{loss_pcts.quantile(0.75):.2f}" if len(loss_pcts) > 0 else "N/A"
+                        ]
+                    
+                    st.table(summary_stats)
+                else:
+                    st.warning("No flag percentage data available")
+            else:
+                st.warning("Flag percentage column not found in data")
+        else:
+            st.warning("No station statistics available")
+    
+    with tab4:
+        st.subheader("Flag Pattern Analysis")
+        
+        if st.session_state.all_flag_analyses is not None and not st.session_state.all_flag_analyses.empty:
+            # Merge flag analysis with station stats
+            if 'station_name' in st.session_state.all_flag_analyses.columns and 'station_name' in st.session_state.all_station_stats.columns:
+                flag_analysis = pd.merge(
+                    st.session_state.all_flag_analyses,
+                    st.session_state.all_station_stats[['station_name', 'final_flag_pct', 'dominant_flag', 'decision']],
+                    on='station_name',
+                    how='left'
                 )
-                ax5.text(0.02, 0.98, cluster_text, transform=ax5.transAxes,
-                        fontsize=9, verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                
+                # Correlation between flag percentage and clustering
+                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+                
+                ax1 = axes[0]
+                if 'final_flag_pct' in flag_analysis.columns and 'max_consecutive_flags' in flag_analysis.columns:
+                    valid_data = flag_analysis[['final_flag_pct', 'max_consecutive_flags']].dropna()
+                    
+                    if len(valid_data) > 0:
+                        scatter = ax1.scatter(valid_data['final_flag_pct'], valid_data['max_consecutive_flags'], 
+                                   alpha=0.6, c=valid_data['final_flag_pct'], cmap='viridis', 
+                                   edgecolor='black', s=50)
+                        ax1.set_xlabel('Flag Percentage (%)')
+                        ax1.set_ylabel('Max Consecutive Flags (24h window)')
+                        ax1.set_title('Flag Percentage vs Clustering')
+                        ax1.grid(True, alpha=0.3)
+                        plt.colorbar(scatter, ax=ax1, label='Flag %')
+                        
+                        # Add trend line
+                        if len(valid_data) > 1:
+                            z = np.polyfit(valid_data['final_flag_pct'], valid_data['max_consecutive_flags'], 1)
+                            p = np.poly1d(z)
+                            x_trend = np.linspace(valid_data['final_flag_pct'].min(), valid_data['final_flag_pct'].max(), 100)
+                            ax1.plot(x_trend, p(x_trend), "r--", alpha=0.8, label='Trend')
+                            ax1.legend()
+                
+                # Histogram of flag clusters
+                ax2 = axes[1]
+                if 'flag_clusters' in flag_analysis.columns:
+                    clusters = flag_analysis['flag_clusters'].dropna()
+                    if len(clusters) > 0:
+                        ax2.hist(clusters, bins=20, color='lightgreen', 
+                                edgecolor='darkgreen', alpha=0.7)
+                        ax2.set_xlabel('Number of Flag Clusters')
+                        ax2.set_ylabel('Number of Stations')
+                        ax2.set_title('Distribution of Flag Clusters')
+                        ax2.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close()
+                
+                # Display flag analysis table
+                display_cols = []
+                for col in ['station_name', 'flag_clusters', 'max_consecutive_flags', 
+                           'autocorrelation_lag1', 'final_flag_pct', 'dominant_flag', 'decision']:
+                    if col in flag_analysis.columns:
+                        display_cols.append(col)
+                
+                if display_cols:
+                    st.dataframe(flag_analysis[display_cols].sort_values('max_consecutive_flags', ascending=False))
+                else:
+                    st.dataframe(flag_analysis)
+            else:
+                st.warning("Cannot merge flag analysis: missing station_name column")
+        else:
+            st.warning("No flag analysis data available")
+    
+    with tab5:
+        st.subheader("Decision Matrix Results")
+        
+        if st.session_state.all_station_stats is not None and 'decision' in st.session_state.all_station_stats.columns:
+            # Summarize decisions
+            decision_summary = st.session_state.all_station_stats['decision'].value_counts().reset_index()
+            decision_summary.columns = ['Decision', 'Count']
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.bar_chart(decision_summary.set_index('Decision'))
+            
+            with col2:
+                st.dataframe(decision_summary)
+            
+            # Show stations by decision category
+            st.subheader("Stations by Decision Category")
+            
+            unique_decisions = ['All'] + sorted([d for d in st.session_state.all_station_stats['decision'].unique() if pd.notna(d)])
+            decision_filter = st.selectbox(
+                "Filter by decision",
+                options=unique_decisions
+            )
+            
+            if decision_filter == 'All':
+                filtered_stats = st.session_state.all_station_stats
+            else:
+                filtered_stats = st.session_state.all_station_stats[
+                    st.session_state.all_station_stats['decision'] == decision_filter
+                ]
+            
+            display_cols = []
+            for col in ['station_name', 'neighbor_name', 'neighbor_dist', 'final_flag_pct', 
+                       'dominant_flag', 'dominant_flag_pct', 'secondary_flag', 'decision']:
+                if col in filtered_stats.columns:
+                    display_cols.append(col)
+            
+            if display_cols:
+                st.dataframe(filtered_stats[display_cols])
+            else:
+                st.dataframe(filtered_stats)
+        else:
+            st.warning("No decision matrix data available")
+    
+    with tab6:
+        st.subheader("Station Location Map")
+        
+        if st.session_state.neighbor_df is not None and not st.session_state.neighbor_df.empty:
+            # Create simple map
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # Set map bounds for New Mexico
+            ax.set_xlim(-109, -103)
+            ax.set_ylim(31.5, 37)
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
+            ax.set_title(f"NM Stations with QA/QC Results ({st.session_state.first_year})")
+            ax.grid(True, alpha=0.3)
+            
+            # Add background
+            ax.fill_between([-109, -103], 31.5, 37, color='lightyellow', alpha=0.3)
+            
+            # Plot stations
+            stats_df = st.session_state.all_station_stats
+            
+            for _, row in st.session_state.neighbor_df.iterrows():
+                station_name = row['PRIMARY NAME']
+                
+                if stats_df is not None and 'station_name' in stats_df.columns:
+                    station_stats = stats_df[stats_df['station_name'] == station_name]
+                    
+                    if not station_stats.empty:
+                        flag_pct = station_stats['final_flag_pct'].iloc[0] if 'final_flag_pct' in station_stats.columns else 0
+                        decision = station_stats['decision'].iloc[0] if 'decision' in station_stats.columns else 'Unknown'
+                        
+                        # Color by decision
+                        if 'REMOVE' in str(decision):
+                            color = 'red'
+                            marker_size = 100
+                        elif 'RETAIN' in str(decision):
+                            color = 'green'
+                            marker_size = 70
+                        elif 'CAUTION' in str(decision):
+                            color = 'orange'
+                            marker_size = 85
+                        else:
+                            color = 'blue'
+                            marker_size = 70
+                        
+                        # Size by data points (additional scaling)
+                        total_points = station_stats['total_points'].iloc[0] if 'total_points' in station_stats.columns else 0
+                        size = marker_size * (1 + total_points / 15000)
+                        
+                        ax.scatter(row['PRIMARY LON'], row['PRIMARY LAT'], 
+                                  color=color, s=size, edgecolor='black', linewidth=0.5, 
+                                  zorder=5, alpha=0.7)
+                        
+                        # Add station name for stations with high flag rates
+                        if flag_pct > 15 or 'REMOVE' in str(decision):
+                            ax.annotate(station_name, 
+                                       xy=(row['PRIMARY LON'], row['PRIMARY LAT']),
+                                       xytext=(5, 5), textcoords='offset points',
+                                       fontsize=8, bbox=dict(boxstyle='round,pad=0.2', 
+                                                             facecolor='white', alpha=0.7))
+                    else:
+                        # Plot station even if no stats (just use default color)
+                        ax.scatter(row['PRIMARY LON'], row['PRIMARY LAT'], 
+                                  color='gray', s=50, edgecolor='black', linewidth=0.5, 
+                                  zorder=5, alpha=0.7)
+                else:
+                    # Plot station even if no stats (just use default color)
+                    ax.scatter(row['PRIMARY LON'], row['PRIMARY LAT'], 
+                              color='gray', s=50, edgecolor='black', linewidth=0.5, 
+                              zorder=5, alpha=0.7)
+            
+            # Add lines to neighbors (optional)
+            show_neighbors = st.checkbox("Show neighbor connections", value=False, key="map_neighbors")
+            if show_neighbors:
+                for _, row in st.session_state.neighbor_df.iterrows():
+                    if pd.notna(row['NEIGHBOR NAME']):
+                        ax.plot([row['PRIMARY LON'], row['NEIGHBOR LON']],
+                               [row['PRIMARY LAT'], row['NEIGHBOR LAT']],
+                               color='gray', linewidth=0.5, alpha=0.3, zorder=1)
+            
+            # Add legend
+            legend_elements = [
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='green', 
+                          markersize=10, label='RETAIN'),
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', 
+                          markersize=10, label='USE WITH CAUTION'),
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='red', 
+                          markersize=10, label='REMOVE'),
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
+                          markersize=10, label='Unknown')
+            ]
+            ax.legend(handles=legend_elements, loc='lower left', framealpha=0.8)
             
             plt.tight_layout()
             st.pyplot(fig)
             plt.close()
             
-            # Download individual station plot
+            # Map download button
             buf = BytesIO()
             fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
             buf.seek(0)
             
             st.download_button(
-                label=f"📥 Download {selected_station} Analysis Plot",
+                label="📥 Download Map",
                 data=buf,
-                file_name=f"{safe_name}_analysis_{st.session_state.first_year}.png",
+                file_name=f"station_map_{st.session_state.first_year}.png",
                 mime="image/png"
             )
-    
-    with tab3:
-        st.subheader("Summary Statistics")
-        
-        # Flag percentage distribution
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        
-        # Histogram of flag percentages
-        ax1 = axes[0]
-        flag_pcts = st.session_state.all_station_stats['final_flag_pct']
-        ax1.hist(flag_pcts, bins=20, color='skyblue', edgecolor='navy', alpha=0.7)
-        ax1.axvline(flag_pcts.mean(), color='red', linestyle='--', linewidth=2, 
-                   label=f"Mean: {flag_pcts.mean():.1f}%")
-        ax1.axvline(flag_pcts.median(), color='green', linestyle='--', linewidth=2, 
-                   label=f"Median: {flag_pcts.median():.1f}%")
-        ax1.set_xlabel('Flag Percentage (%)')
-        ax1.set_ylabel('Number of Stations')
-        ax1.set_title('Distribution of Flag Percentages')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Box plot of flag percentages
-        ax2 = axes[1]
-        bp = ax2.boxplot(flag_pcts, patch_artist=True)
-        bp['boxes'][0].set_facecolor('lightblue')
-        ax2.set_ylabel('Flag Percentage (%)')
-        ax2.set_title('Box Plot of Flag Percentages')
-        ax2.grid(True, alpha=0.3)
-        ax2.set_xticklabels(['All Stations'])
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-        
-        # Summary table
-        summary_stats = pd.DataFrame({
-            'Metric': ['Mean', 'Median', 'Std Dev', 'Min', 'Max', 'Q1', 'Q3'],
-            'Flag %': [
-                f"{flag_pcts.mean():.2f}",
-                f"{flag_pcts.median():.2f}",
-                f"{flag_pcts.std():.2f}",
-                f"{flag_pcts.min():.2f}",
-                f"{flag_pcts.max():.2f}",
-                f"{flag_pcts.quantile(0.25):.2f}",
-                f"{flag_pcts.quantile(0.75):.2f}"
-            ],
-            'Data Loss %': [
-                f"{st.session_state.all_comparisons['data_loss_pct'].mean():.2f}",
-                f"{st.session_state.all_comparisons['data_loss_pct'].median():.2f}",
-                f"{st.session_state.all_comparisons['data_loss_pct'].std():.2f}",
-                f"{st.session_state.all_comparisons['data_loss_pct'].min():.2f}",
-                f"{st.session_state.all_comparisons['data_loss_pct'].max():.2f}",
-                f"{st.session_state.all_comparisons['data_loss_pct'].quantile(0.25):.2f}",
-                f"{st.session_state.all_comparisons['data_loss_pct'].quantile(0.75):.2f}"
-            ]
-        })
-        st.table(summary_stats)
-    
-    with tab4:
-        st.subheader("Flag Pattern Analysis")
-        
-        # Merge flag analysis with station stats
-        flag_analysis = pd.merge(
-            st.session_state.all_flag_analyses,
-            st.session_state.all_station_stats[['station_name', 'final_flag_pct', 'dominant_flag', 'decision']],
-            on='station_name'
-        )
-        
-        # Correlation between flag percentage and clustering
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        
-        ax1 = axes[0]
-        scatter = ax1.scatter(flag_analysis['final_flag_pct'], flag_analysis['max_consecutive_flags'], 
-                   alpha=0.6, c=flag_analysis['final_flag_pct'], cmap='viridis', 
-                   edgecolor='black', s=50)
-        ax1.set_xlabel('Flag Percentage (%)')
-        ax1.set_ylabel('Max Consecutive Flags (24h window)')
-        ax1.set_title('Flag Percentage vs Clustering')
-        ax1.grid(True, alpha=0.3)
-        plt.colorbar(scatter, ax=ax1, label='Flag %')
-        
-        # Add trend line
-        if len(flag_analysis) > 1:
-            z = np.polyfit(flag_analysis['final_flag_pct'], flag_analysis['max_consecutive_flags'], 1)
-            p = np.poly1d(z)
-            x_trend = np.linspace(flag_analysis['final_flag_pct'].min(), flag_analysis['final_flag_pct'].max(), 100)
-            ax1.plot(x_trend, p(x_trend), "r--", alpha=0.8, label='Trend')
-            ax1.legend()
-        
-        # Histogram of flag clusters
-        ax2 = axes[1]
-        ax2.hist(flag_analysis['flag_clusters'], bins=20, color='lightgreen', 
-                edgecolor='darkgreen', alpha=0.7)
-        ax2.set_xlabel('Number of Flag Clusters')
-        ax2.set_ylabel('Number of Stations')
-        ax2.set_title('Distribution of Flag Clusters')
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-        
-        # Display flag analysis table
-        st.dataframe(flag_analysis.sort_values('max_consecutive_flags', ascending=False))
-    
-    with tab5:
-        st.subheader("Decision Matrix Results")
-        
-        # Summarize decisions
-        decision_summary = st.session_state.all_station_stats['decision'].value_counts().reset_index()
-        decision_summary.columns = ['Decision', 'Count']
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.bar_chart(decision_summary.set_index('Decision'))
-        
-        with col2:
-            st.dataframe(decision_summary)
-        
-        # Show stations by decision category
-        st.subheader("Stations by Decision Category")
-        
-        decision_filter = st.selectbox(
-            "Filter by decision",
-            options=['All'] + sorted(list(st.session_state.all_station_stats['decision'].unique()))
-        )
-        
-        if decision_filter == 'All':
-            filtered_stats = st.session_state.all_station_stats
         else:
-            filtered_stats = st.session_state.all_station_stats[
-                st.session_state.all_station_stats['decision'] == decision_filter
-            ]
-        
-        st.dataframe(
-            filtered_stats[['station_name', 'neighbor_name', 'neighbor_dist', 'final_flag_pct', 
-                           'dominant_flag', 'dominant_flag_pct', 'secondary_flag', 'decision']]
-        )
-    
-    with tab6:
-        st.subheader("Station Location Map")
-        
-        # Create simple map
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
-        # Set map bounds for New Mexico
-        ax.set_xlim(-109, -103)
-        ax.set_ylim(31.5, 37)
-        ax.set_xlabel('Longitude')
-        ax.set_ylabel('Latitude')
-        ax.set_title(f"NM Stations with QA/QC Results ({st.session_state.first_year})")
-        ax.grid(True, alpha=0.3)
-        
-        # Add background
-        ax.fill_between([-109, -103], 31.5, 37, color='lightyellow', alpha=0.3)
-        
-        # Plot stations
-        stats_df = st.session_state.all_station_stats
-        
-        for _, row in st.session_state.neighbor_df.iterrows():
-            station_name = row['PRIMARY NAME']
-            station_stats = stats_df[stats_df['station_name'] == station_name]
-            
-            if not station_stats.empty:
-                flag_pct = station_stats['final_flag_pct'].iloc[0]
-                decision = station_stats['decision'].iloc[0]
-                
-                # Color by decision
-                if 'REMOVE' in decision:
-                    color = 'red'
-                    marker_size = 100
-                elif 'RETAIN' in decision:
-                    color = 'green'
-                    marker_size = 70
-                elif 'CAUTION' in decision:
-                    color = 'orange'
-                    marker_size = 85
-                else:
-                    color = 'blue'
-                    marker_size = 70
-                
-                # Size by data points (additional scaling)
-                total_points = station_stats['total_points'].iloc[0]
-                size = marker_size * (1 + total_points / 15000)
-                
-                ax.scatter(row['PRIMARY LON'], row['PRIMARY LAT'], 
-                          color=color, s=size, edgecolor='black', linewidth=0.5, 
-                          zorder=5, alpha=0.7)
-                
-                # Add station name for stations with high flag rates
-                if flag_pct > 15 or 'REMOVE' in decision:
-                    ax.annotate(station_name, 
-                               xy=(row['PRIMARY LON'], row['PRIMARY LAT']),
-                               xytext=(5, 5), textcoords='offset points',
-                               fontsize=8, bbox=dict(boxstyle='round,pad=0.2', 
-                                                     facecolor='white', alpha=0.7))
-        
-        # Add lines to neighbors (optional)
-        show_neighbors = st.checkbox("Show neighbor connections", value=False, key="map_neighbors")
-        if show_neighbors:
-            for _, row in st.session_state.neighbor_df.iterrows():
-                if pd.notna(row['NEIGHBOR NAME']):
-                    ax.plot([row['PRIMARY LON'], row['NEIGHBOR LON']],
-                           [row['PRIMARY LAT'], row['NEIGHBOR LAT']],
-                           color='gray', linewidth=0.5, alpha=0.3, zorder=1)
-        
-        # Add legend
-        legend_elements = [
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='green', 
-                      markersize=10, label='RETAIN'),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', 
-                      markersize=10, label='USE WITH CAUTION'),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='red', 
-                      markersize=10, label='REMOVE')
-        ]
-        ax.legend(handles=legend_elements, loc='lower left', framealpha=0.8)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-        
-        # Map download button
-        buf = BytesIO()
-        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-        buf.seek(0)
-        
-        st.download_button(
-            label="📥 Download Map",
-            data=buf,
-            file_name=f"station_map_{st.session_state.first_year}.png",
-            mime="image/png"
-        )
+            st.warning("No neighbor data available for map")
 
 # -------------------------------
 # Footer
@@ -1182,6 +1317,9 @@ if 'all_station_stats' in st.session_state:
 st.markdown("---")
 st.markdown("""
 **Data Source:** NOAA Integrated Surface Database (ISD) - ASOS Network  
+**Analysis:** Multi-tier QA/QC for hourly air temperature with decision matrix  
+**Contact:** For questions or issues, please contact the developer
+""")
 **Analysis:** Multi-tier QA/QC for hourly air temperature with decision matrix  
 **Contact:** For questions or issues, please contact the developer
 """)
