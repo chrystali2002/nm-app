@@ -477,116 +477,170 @@ if st.button("🚀 Run QA/QC Analysis"):
         st.stop()
     
     # Step 2: Find first year with data
-    status_text.text("Scanning for available data...")
-    first_year_with_data = None
-    nm_stations_files = []
+    # Step 2: Find stations with data in the selected years
+status_text.text("Identifying stations with data in selected years...")
+stations_with_data = set()
+base_url = None
+years_with_data_dict = {}
+
+for i, year in enumerate(YEARS):
+    progress = i / len(YEARS) * 0.2
+    progress_bar.progress(progress)
     
-    for i, year in enumerate(YEARS):
-        progress = i / len(YEARS) * 0.2  # First 20% of progress
-        progress_bar.progress(progress)
+    files, url = get_access_files(year)
+    if not files:
+        continue
+    
+    if base_url is None:
+        base_url = url
+    
+    for _, row in nm_stations.iterrows():
+        usaf = str(row['USAF']).zfill(6)
+        wban = str(row['WBAN']).zfill(5)
+        fname = f"{usaf}{wban}.csv"
         
-        all_files, base_url = get_access_files(year)
-        if not all_files:
-            continue
+        if fname in files:
+            station_key = f"{row['STATION NAME']}|{usaf}|{wban}"
+            stations_with_data.add(station_key)
+            
+            if station_key not in years_with_data_dict:
+                years_with_data_dict[station_key] = []
+            years_with_data_dict[station_key].append(year)
+
+if not stations_with_data:
+    st.error("No stations found with data in the selected year range!")
+    st.stop()
+
+# Create stations list
+nm_stations_files_list = []
+for _, row in nm_stations.iterrows():
+    usaf = str(row['USAF']).zfill(6)
+    wban = str(row['WBAN']).zfill(5)
+    station_key = f"{row['STATION NAME']}|{usaf}|{wban}"
+    
+    if station_key in stations_with_data:
+        years_available = years_with_data_dict[station_key]
+        year_range_str = f"{min(years_available)}-{max(years_available)}"
         
-        year_stations = []
-        for _, row in nm_stations.iterrows():
-            usaf = str(row['USAF']).zfill(6)
-            wban = str(row['WBAN']).zfill(5)
-            fname = f"{usaf}{wban}.csv"
-            if fname in all_files:
-                year_stations.append({
-                    "STATION NAME": row['STATION NAME'],
-                    "USAF": usaf,
-                    "WBAN": wban,
-                    "LAT": row['LAT'],
-                    "LON": row['LON'],
-                    "FILENAME": fname
-                })
-        
-        if year_stations:
-            first_year_with_data = year
-            nm_stations_files = year_stations
-            break
+        nm_stations_files_list.append({
+            "STATION NAME": row['STATION NAME'],
+            "USAF": usaf,
+            "WBAN": wban,
+            "LAT": row['LAT'],
+            "LON": row['LON'],
+            "FILENAME": f"{usaf}{wban}.csv",
+            "YEARS_AVAILABLE": years_available,
+            "YEAR_RANGE": year_range_str
+        })
+
+nm_stations_files = pd.DataFrame(nm_stations_files_list)
+
+st.success(f"Found {len(nm_stations_files)} stations with data in {year_range[0]}-{year_range[1]}")
+
+# Show summary of years coverage
+year_coverage = {}
+for _, row in nm_stations_files.iterrows():
+    for year in row['YEARS_AVAILABLE']:
+        year_coverage[year] = year_coverage.get(year, 0) + 1
+
+if year_coverage:
+    coverage_df = pd.DataFrame([
+        {"Year": year, "Stations": count} 
+        for year, count in sorted(year_coverage.items())
+    ])
+    st.info(f"Yearly coverage: {', '.join([f'{y}: {c}' for y, c in sorted(year_coverage.items())])}")
+
+# Apply station sampling
+original_station_count = len(nm_stations_files)
+if sampling_fraction < 1.0:
+    nm_stations_files = sample_stations(nm_stations_files, sampling_fraction, random_seed)
+    st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
+
+# Step 3: Determine nearest neighbors (same as before)
+status_text.text("Calculating nearest neighbors...")
+neighbor_list = []
+
+for idx, primary in nm_stations_files.iterrows():
+    primary_coords = (primary['LAT'], primary['LON'])
+    temp_df = nm_stations_files.copy()
+    temp_df['DIST'] = temp_df.apply(
+        lambda row: geodesic(primary_coords, (row['LAT'], row['LON'])).km, axis=1
+    )
+    neighbors = temp_df[temp_df['FILENAME'] != primary['FILENAME']]
     
-    if not first_year_with_data:
-        st.error("No stations found with data in the selected year range!")
-        st.stop()
+    if not neighbors.empty:
+        nearest = neighbors.sort_values('DIST').iloc[0]
+        neighbor_list.append({
+            "PRIMARY NAME": primary['STATION NAME'],
+            "PRIMARY FILE": primary['FILENAME'],
+            "PRIMARY LAT": primary['LAT'],
+            "PRIMARY LON": primary['LON'],
+            "NEIGHBOR NAME": nearest['STATION NAME'],
+            "NEIGHBOR FILE": nearest['FILENAME'],
+            "NEIGHBOR LAT": nearest['LAT'],
+            "NEIGHBOR LON": nearest['LON'],
+            "DIST_KM": nearest['DIST']
+        })
+
+neighbor_df = pd.DataFrame(neighbor_list)
+
+# Step 4: Process each station for ALL selected years
+status_text.text("Processing stations with QA/QC...")
+all_station_stats = []
+all_flag_analyses = []
+all_comparisons = []
+
+total_stations = len(neighbor_df)
+
+if show_progress_details:
+    progress_details = st.empty()
+
+for idx, row in neighbor_df.iterrows():
+    progress = 0.2 + (idx / total_stations * 0.7)
+    progress_bar.progress(progress)
     
-    nm_stations_files = pd.DataFrame(nm_stations_files)
+    primary_file = row['PRIMARY FILE']
+    neighbor_file = row['NEIGHBOR FILE']
+    station_name = row['PRIMARY NAME']
     
-    # Apply station sampling
-    original_station_count = len(nm_stations_files)
-    if sampling_fraction < 1.0:
-        nm_stations_files = sample_stations(nm_stations_files, sampling_fraction, random_seed)
-        st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
+    status_text.text(f"Processing {station_name} ({idx+1}/{total_stations})...")
     
-    st.success(f"Found {len(nm_stations_files)} stations with data in {first_year_with_data}")
-    
-    # Step 3: Determine nearest neighbors
-    status_text.text("Calculating nearest neighbors...")
-    neighbor_list = []
-    
-    for idx, primary in nm_stations_files.iterrows():
-        primary_coords = (primary['LAT'], primary['LON'])
-        # Create a temporary DataFrame for distance calculation
-        temp_df = nm_stations_files.copy()
-        temp_df['DIST'] = temp_df.apply(
-            lambda row: geodesic(primary_coords, (row['LAT'], row['LON'])).km, axis=1
-        )
-        neighbors = temp_df[temp_df['FILENAME'] != primary['FILENAME']]
-        
-        if not neighbors.empty:
-            nearest = neighbors.sort_values('DIST').iloc[0]
-            neighbor_list.append({
-                "PRIMARY NAME": primary['STATION NAME'],
-                "PRIMARY FILE": primary['FILENAME'],
-                "PRIMARY LAT": primary['LAT'],
-                "PRIMARY LON": primary['LON'],
-                "NEIGHBOR NAME": nearest['STATION NAME'],
-                "NEIGHBOR FILE": nearest['FILENAME'],
-                "NEIGHBOR LAT": nearest['LAT'],
-                "NEIGHBOR LON": nearest['LON'],
-                "DIST_KM": nearest['DIST']
-            })
-    
-    neighbor_df = pd.DataFrame(neighbor_list)
-    
-    # Step 4: Process each station
-    status_text.text("Processing stations with QA/QC...")
-    all_station_stats = []
-    all_flag_analyses = []
-    all_comparisons = []
-    
-    total_stations = len(neighbor_df)
-    
-    # Create a container for progress details if enabled
     if show_progress_details:
-        progress_details = st.empty()
+        progress_details.info(f"📈 Processing station {idx+1}/{total_stations}: {station_name}")
     
-    for idx, row in neighbor_df.iterrows():
-        progress = 0.2 + (idx / total_stations * 0.7)  # Next 70% of progress
-        progress_bar.progress(progress)
+    # Load data for ALL selected years
+    all_primary_data = []
+    all_neighbor_data = []
+    
+    for year in YEARS:  # Use the exact years the user selected
+        year_url = f"https://www.ncei.noaa.gov/data/global-hourly/access/{year}/"
         
-        primary_file = row['PRIMARY FILE']
-        neighbor_file = row['NEIGHBOR FILE']
-        station_name = row['PRIMARY NAME']
+        df_primary_year = load_access_csv(year_url + primary_file)
+        if not df_primary_year.empty:
+            all_primary_data.append(df_primary_year)
         
-        status_text.text(f"Processing {station_name} ({idx+1}/{total_stations})...")
-        
-        if show_progress_details:
-            progress_details.info(f"📈 Processing station {idx+1}/{total_stations}: {station_name}")
-        
-        # Load data
-        df_primary = load_access_csv(base_url + primary_file)
-        if df_primary.empty:
-            continue
-        
-        df_neighbor = load_access_csv(base_url + neighbor_file) if pd.notna(neighbor_file) else None
-        
-        # Align data
-        if df_neighbor is not None and not df_neighbor.empty:
-            df_primary, df_neighbor = df_primary.align(df_neighbor, join='inner')
+        if pd.notna(neighbor_file):
+            df_neighbor_year = load_access_csv(year_url + neighbor_file)
+            if not df_neighbor_year.empty:
+                all_neighbor_data.append(df_neighbor_year)
+    
+    if not all_primary_data:
+        continue
+    
+    # Combine all years
+    df_primary = pd.concat(all_primary_data)
+    df_primary = df_primary.sort_index()
+    
+    df_neighbor = None
+    if all_neighbor_data:
+        df_neighbor = pd.concat(all_neighbor_data)
+        df_neighbor = df_neighbor.sort_index()
+    
+    # Align data
+    if df_neighbor is not None and not df_neighbor.empty:
+        df_primary, df_neighbor = df_primary.align(df_neighbor, join='inner')
+    
+    
         
         # Multi-tier QA/QC
         df_primary['flag_range'] = (df_primary['T_air'] < -40) | (df_primary['T_air'] > 55)
