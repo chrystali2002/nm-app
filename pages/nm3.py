@@ -529,10 +529,12 @@ if st.button("🚀 Run QA/QC Analysis"):
     
     for idx, primary in nm_stations_files.iterrows():
         primary_coords = (primary['LAT'], primary['LON'])
-        nm_stations_files['DIST'] = nm_stations_files.apply(
+        # Create a temporary DataFrame for distance calculation
+        temp_df = nm_stations_files.copy()
+        temp_df['DIST'] = temp_df.apply(
             lambda row: geodesic(primary_coords, (row['LAT'], row['LON'])).km, axis=1
         )
-        neighbors = nm_stations_files[nm_stations_files['FILENAME'] != primary['FILENAME']]
+        neighbors = temp_df[temp_df['FILENAME'] != primary['FILENAME']]
         
         if not neighbors.empty:
             nearest = neighbors.sort_values('DIST').iloc[0]
@@ -681,24 +683,29 @@ if 'all_station_stats' in st.session_state:
     with tab1:
         st.subheader("Station Overview")
         
-        # Check if both DataFrames exist and have the station_name column
+        # Check if both DataFrames exist
         if st.session_state.all_station_stats is not None and st.session_state.all_comparisons is not None:
-            # Ensure station_name column exists in both DataFrames
-            if 'station_name' in st.session_state.all_station_stats.columns and 'station_name' in st.session_state.all_comparisons.columns:
-                # Merge all statistics
-                overview_df = pd.merge(
-                    st.session_state.all_station_stats,
-                    st.session_state.all_comparisons,
-                    on='station_name',
-                    how='outer'  # Use outer join to keep all records
-                )
+            # Ensure we have data
+            if not st.session_state.all_station_stats.empty and not st.session_state.all_comparisons.empty:
+                # Check if station_name column exists in both DataFrames
+                if 'station_name' in st.session_state.all_station_stats.columns and 'station_name' in st.session_state.all_comparisons.columns:
+                    # Merge all statistics
+                    overview_df = pd.merge(
+                        st.session_state.all_station_stats,
+                        st.session_state.all_comparisons,
+                        on='station_name',
+                        how='outer'
+                    )
+                else:
+                    # If station_name is missing, use index or create a default
+                    st.warning("Station name column missing in some data. Using index for merging.")
+                    overview_df = pd.concat([
+                        st.session_state.all_station_stats.reset_index(drop=True),
+                        st.session_state.all_comparisons.reset_index(drop=True)
+                    ], axis=1)
             else:
-                # If station_name is missing, use index or create a default
-                st.warning("Station name column missing in some data. Using index for merging.")
-                overview_df = pd.concat([
-                    st.session_state.all_station_stats.reset_index(drop=True),
-                    st.session_state.all_comparisons.reset_index(drop=True)
-                ], axis=1)
+                st.error("One or more dataframes are empty")
+                st.stop()
         else:
             st.error("Missing data for overview")
             st.stop()
@@ -1067,15 +1074,18 @@ if 'all_station_stats' in st.session_state:
                     # Add data loss stats if available
                     if st.session_state.all_comparisons is not None and 'data_loss_pct' in st.session_state.all_comparisons.columns:
                         loss_pcts = st.session_state.all_comparisons['data_loss_pct'].dropna()
-                        summary_stats['Data Loss %'] = [
-                            f"{loss_pcts.mean():.2f}" if len(loss_pcts) > 0 else "N/A",
-                            f"{loss_pcts.median():.2f}" if len(loss_pcts) > 0 else "N/A",
-                            f"{loss_pcts.std():.2f}" if len(loss_pcts) > 0 else "N/A",
-                            f"{loss_pcts.min():.2f}" if len(loss_pcts) > 0 else "N/A",
-                            f"{loss_pcts.max():.2f}" if len(loss_pcts) > 0 else "N/A",
-                            f"{loss_pcts.quantile(0.25):.2f}" if len(loss_pcts) > 0 else "N/A",
-                            f"{loss_pcts.quantile(0.75):.2f}" if len(loss_pcts) > 0 else "N/A"
-                        ]
+                        if len(loss_pcts) > 0:
+                            summary_stats['Data Loss %'] = [
+                                f"{loss_pcts.mean():.2f}",
+                                f"{loss_pcts.median():.2f}",
+                                f"{loss_pcts.std():.2f}",
+                                f"{loss_pcts.min():.2f}",
+                                f"{loss_pcts.max():.2f}",
+                                f"{loss_pcts.quantile(0.25):.2f}",
+                                f"{loss_pcts.quantile(0.75):.2f}"
+                            ]
+                        else:
+                            summary_stats['Data Loss %'] = ["N/A"] * 7
                     
                     st.table(summary_stats)
                 else:
@@ -1091,9 +1101,15 @@ if 'all_station_stats' in st.session_state:
         if st.session_state.all_flag_analyses is not None and not st.session_state.all_flag_analyses.empty:
             # Merge flag analysis with station stats
             if 'station_name' in st.session_state.all_flag_analyses.columns and 'station_name' in st.session_state.all_station_stats.columns:
+                # Get only the columns we need from station stats
+                station_cols = ['station_name']
+                for col in ['final_flag_pct', 'dominant_flag', 'decision']:
+                    if col in st.session_state.all_station_stats.columns:
+                        station_cols.append(col)
+                
                 flag_analysis = pd.merge(
                     st.session_state.all_flag_analyses,
-                    st.session_state.all_station_stats[['station_name', 'final_flag_pct', 'dominant_flag', 'decision']],
+                    st.session_state.all_station_stats[station_cols],
                     on='station_name',
                     how='left'
                 )
@@ -1147,56 +1163,65 @@ if 'all_station_stats' in st.session_state:
                         display_cols.append(col)
                 
                 if display_cols:
-                    st.dataframe(flag_analysis[display_cols].sort_values('max_consecutive_flags', ascending=False))
+                    # Sort by max_consecutive_flags if available
+                    if 'max_consecutive_flags' in flag_analysis.columns:
+                        st.dataframe(flag_analysis[display_cols].sort_values('max_consecutive_flags', ascending=False))
+                    else:
+                        st.dataframe(flag_analysis[display_cols])
                 else:
                     st.dataframe(flag_analysis)
             else:
                 st.warning("Cannot merge flag analysis: missing station_name column")
+                st.dataframe(st.session_state.all_flag_analyses)
         else:
             st.warning("No flag analysis data available")
     
     with tab5:
         st.subheader("Decision Matrix Results")
         
-        if st.session_state.all_station_stats is not None and 'decision' in st.session_state.all_station_stats.columns:
-            # Summarize decisions
-            decision_summary = st.session_state.all_station_stats['decision'].value_counts().reset_index()
-            decision_summary.columns = ['Decision', 'Count']
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.bar_chart(decision_summary.set_index('Decision'))
-            
-            with col2:
-                st.dataframe(decision_summary)
-            
-            # Show stations by decision category
-            st.subheader("Stations by Decision Category")
-            
-            unique_decisions = ['All'] + sorted([d for d in st.session_state.all_station_stats['decision'].unique() if pd.notna(d)])
-            decision_filter = st.selectbox(
-                "Filter by decision",
-                options=unique_decisions
-            )
-            
-            if decision_filter == 'All':
-                filtered_stats = st.session_state.all_station_stats
+        if st.session_state.all_station_stats is not None and not st.session_state.all_station_stats.empty:
+            if 'decision' in st.session_state.all_station_stats.columns:
+                # Summarize decisions
+                decision_summary = st.session_state.all_station_stats['decision'].value_counts().reset_index()
+                decision_summary.columns = ['Decision', 'Count']
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.bar_chart(decision_summary.set_index('Decision'))
+                
+                with col2:
+                    st.dataframe(decision_summary)
+                
+                # Show stations by decision category
+                st.subheader("Stations by Decision Category")
+                
+                unique_decisions = ['All'] + sorted([d for d in st.session_state.all_station_stats['decision'].unique() if pd.notna(d)])
+                decision_filter = st.selectbox(
+                    "Filter by decision",
+                    options=unique_decisions
+                )
+                
+                if decision_filter == 'All':
+                    filtered_stats = st.session_state.all_station_stats
+                else:
+                    filtered_stats = st.session_state.all_station_stats[
+                        st.session_state.all_station_stats['decision'] == decision_filter
+                    ]
+                
+                display_cols = []
+                for col in ['station_name', 'neighbor_name', 'neighbor_dist', 'final_flag_pct', 
+                           'dominant_flag', 'dominant_flag_pct', 'secondary_flag', 'decision']:
+                    if col in filtered_stats.columns:
+                        display_cols.append(col)
+                
+                if display_cols:
+                    st.dataframe(filtered_stats[display_cols])
+                else:
+                    st.dataframe(filtered_stats)
             else:
-                filtered_stats = st.session_state.all_station_stats[
-                    st.session_state.all_station_stats['decision'] == decision_filter
-                ]
-            
-            display_cols = []
-            for col in ['station_name', 'neighbor_name', 'neighbor_dist', 'final_flag_pct', 
-                       'dominant_flag', 'dominant_flag_pct', 'secondary_flag', 'decision']:
-                if col in filtered_stats.columns:
-                    display_cols.append(col)
-            
-            if display_cols:
-                st.dataframe(filtered_stats[display_cols])
-            else:
-                st.dataframe(filtered_stats)
+                st.warning("Decision column not found in data")
+                st.dataframe(st.session_state.all_station_stats)
         else:
             st.warning("No decision matrix data available")
     
@@ -1317,9 +1342,6 @@ if 'all_station_stats' in st.session_state:
 st.markdown("---")
 st.markdown("""
 **Data Source:** NOAA Integrated Surface Database (ISD) - ASOS Network  
-**Analysis:** Multi-tier QA/QC for hourly air temperature with decision matrix  
-**Contact:** For questions or issues, please contact the developer
-""")
 **Analysis:** Multi-tier QA/QC for hourly air temperature with decision matrix  
 **Contact:** For questions or issues, please contact the developer
 """)
