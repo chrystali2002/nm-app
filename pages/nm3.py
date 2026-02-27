@@ -701,15 +701,20 @@ for idx, row in neighbor_df.iterrows():
     status_text.text("Analysis complete!")
     
     # Store aggregated results
+    # Store aggregated results
     st.session_state.all_station_stats = pd.DataFrame(all_station_stats)
     st.session_state.all_flag_analyses = pd.DataFrame(all_flag_analyses)
     st.session_state.all_comparisons = pd.DataFrame(all_comparisons)
     st.session_state.neighbor_df = neighbor_df
-    st.session_state.first_year = first_year_with_data
+# For backward compatibility, set first_year to the start of the range
+    st.session_state.first_year = year_range[0]
+    st.session_state.year_end = year_range[1]  # Also store end year
     st.session_state.sampling_fraction = sampling_fraction
     st.session_state.original_station_count = original_station_count
-    
-    st.success(f"✅ Processed {len(all_station_stats)} stations successfully!")
+
+    st.success(f"✅ Processed {len(all_station_stats)} stations successfully for years {year_range[0]}-{year_range[1]}!")
+
+   
     
     if sampling_fraction < 1.0:
         st.info(f"💡 This was a {int(sampling_fraction*100)}% sample analysis. Select 'Full Analysis' from the sidebar to process all {original_station_count} stations.")
@@ -933,7 +938,8 @@ if 'all_station_stats' in st.session_state:
                             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                     
                     ax1.set_ylabel('Air Temperature (°C)')
-                    ax1.set_title(f"{st.session_state.first_year} - {selected_station} - Hourly Temperature with QA/QC")
+                    
+                    ax1.set_title(f"{st.session_state.first_year}-{st.session_state.year_end} - {selected_station} - Hourly Temperature with QA/QC")
                     ax1.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=9)
                     ax1.grid(True, alpha=0.3)
                     
