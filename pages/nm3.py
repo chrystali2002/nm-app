@@ -1095,101 +1095,101 @@ if 'all_station_stats' in st.session_state:
         else:
             st.warning("No station statistics available")
     
-   with tab4:
-    st.subheader("Flag Pattern Analysis")
-    
-    if st.session_state.all_flag_analyses is not None and not st.session_state.all_flag_analyses.empty:
-        # Merge flag analysis with station stats
-        if 'station_name' in st.session_state.all_flag_analyses.columns and 'station_name' in st.session_state.all_station_stats.columns:
-            # Get only the columns we need from station stats
-            station_cols = ['station_name']
-            for col in ['final_flag_pct', 'dominant_flag', 'decision']:
-                if col in st.session_state.all_station_stats.columns:
-                    station_cols.append(col)
-            
-            flag_analysis = pd.merge(
-                st.session_state.all_flag_analyses,
-                st.session_state.all_station_stats[station_cols],
-                on='station_name',
-                how='left'
-            )
-            
-            # Correlation between flag percentage and clustering
-            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-            
-            ax1 = axes[0]
-            if 'final_flag_pct' in flag_analysis.columns and 'max_consecutive_flags' in flag_analysis.columns:
-                valid_data = flag_analysis[['final_flag_pct', 'max_consecutive_flags']].dropna()
+      with tab4:
+        st.subheader("Flag Pattern Analysis")
+        
+        if st.session_state.all_flag_analyses is not None and not st.session_state.all_flag_analyses.empty:
+            # Merge flag analysis with station stats
+            if 'station_name' in st.session_state.all_flag_analyses.columns and 'station_name' in st.session_state.all_station_stats.columns:
+                # Get only the columns we need from station stats
+                station_cols = ['station_name']
+                for col in ['final_flag_pct', 'dominant_flag', 'decision']:
+                    if col in st.session_state.all_station_stats.columns:
+                        station_cols.append(col)
                 
-                if len(valid_data) > 0:
-                    scatter = ax1.scatter(valid_data['final_flag_pct'], valid_data['max_consecutive_flags'], 
-                               alpha=0.6, c=valid_data['final_flag_pct'], cmap='viridis', 
-                               edgecolor='black', s=50)
-                    ax1.set_xlabel('Flag Percentage (%)')
-                    ax1.set_ylabel('Max Consecutive Flags (24h window)')
-                    ax1.set_title('Flag Percentage vs Clustering')
-                    ax1.grid(True, alpha=0.3)
-                    plt.colorbar(scatter, ax=ax1, label='Flag %')
+                flag_analysis = pd.merge(
+                    st.session_state.all_flag_analyses,
+                    st.session_state.all_station_stats[station_cols],
+                    on='station_name',
+                    how='left'
+                )
+                
+                # Correlation between flag percentage and clustering
+                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+                
+                ax1 = axes[0]
+                if 'final_flag_pct' in flag_analysis.columns and 'max_consecutive_flags' in flag_analysis.columns:
+                    valid_data = flag_analysis[['final_flag_pct', 'max_consecutive_flags']].dropna()
                     
-                    # Add trend line with error handling
-                    if len(valid_data) > 1:
-                        try:
-                            # Check if there's enough variation in the data
-                            if valid_data['final_flag_pct'].std() > 0 and valid_data['max_consecutive_flags'].std() > 0:
-                                z = np.polyfit(valid_data['final_flag_pct'], valid_data['max_consecutive_flags'], 1)
-                                p = np.poly1d(z)
-                                x_trend = np.linspace(valid_data['final_flag_pct'].min(), valid_data['final_flag_pct'].max(), 100)
-                                ax1.plot(x_trend, p(x_trend), "r--", alpha=0.8, label='Trend')
-                                ax1.legend()
-                            else:
-                                # If no variation, just show a horizontal line at the mean
+                    if len(valid_data) > 0:
+                        scatter = ax1.scatter(valid_data['final_flag_pct'], valid_data['max_consecutive_flags'], 
+                                   alpha=0.6, c=valid_data['final_flag_pct'], cmap='viridis', 
+                                   edgecolor='black', s=50)
+                        ax1.set_xlabel('Flag Percentage (%)')
+                        ax1.set_ylabel('Max Consecutive Flags (24h window)')
+                        ax1.set_title('Flag Percentage vs Clustering')
+                        ax1.grid(True, alpha=0.3)
+                        plt.colorbar(scatter, ax=ax1, label='Flag %')
+                        
+                        # Add trend line with error handling
+                        if len(valid_data) > 1:
+                            try:
+                                # Check if there's enough variation in the data
+                                if valid_data['final_flag_pct'].std() > 0 and valid_data['max_consecutive_flags'].std() > 0:
+                                    z = np.polyfit(valid_data['final_flag_pct'], valid_data['max_consecutive_flags'], 1)
+                                    p = np.poly1d(z)
+                                    x_trend = np.linspace(valid_data['final_flag_pct'].min(), valid_data['final_flag_pct'].max(), 100)
+                                    ax1.plot(x_trend, p(x_trend), "r--", alpha=0.8, label='Trend')
+                                    ax1.legend()
+                                else:
+                                    # If no variation, just show a horizontal line at the mean
+                                    mean_val = valid_data['max_consecutive_flags'].mean()
+                                    ax1.axhline(y=mean_val, color='r', linestyle='--', alpha=0.8, label='Mean value')
+                                    ax1.legend()
+                            except (np.linalg.LinAlgError, ValueError) as e:
+                                # If polyfit fails, just show a horizontal line at the mean
                                 mean_val = valid_data['max_consecutive_flags'].mean()
-                                ax1.axhline(y=mean_val, color='r', linestyle='--', alpha=0.8, label='Mean value')
+                                ax1.axhline(y=mean_val, color='r', linestyle='--', alpha=0.8, label='Mean value (trend unavailable)')
                                 ax1.legend()
-                        except (np.linalg.LinAlgError, ValueError) as e:
-                            # If polyfit fails, just show a horizontal line at the mean
-                            mean_val = valid_data['max_consecutive_flags'].mean()
-                            ax1.axhline(y=mean_val, color='r', linestyle='--', alpha=0.8, label='Mean value (trend unavailable)')
-                            ax1.legend()
-                            # Optionally log the error
-                            print(f"Trend line calculation failed: {e}")
-            
-            # Histogram of flag clusters
-            ax2 = axes[1]
-            if 'flag_clusters' in flag_analysis.columns:
-                clusters = flag_analysis['flag_clusters'].dropna()
-                if len(clusters) > 0:
-                    ax2.hist(clusters, bins=min(20, len(clusters)), color='lightgreen', 
-                            edgecolor='darkgreen', alpha=0.7)
-                    ax2.set_xlabel('Number of Flag Clusters')
-                    ax2.set_ylabel('Number of Stations')
-                    ax2.set_title('Distribution of Flag Clusters')
-                    ax2.grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
-            
-            # Display flag analysis table
-            display_cols = []
-            for col in ['station_name', 'flag_clusters', 'max_consecutive_flags', 
-                       'autocorrelation_lag1', 'final_flag_pct', 'dominant_flag', 'decision']:
-                if col in flag_analysis.columns:
-                    display_cols.append(col)
-            
-            if display_cols:
-                # Sort by max_consecutive_flags if available
-                if 'max_consecutive_flags' in flag_analysis.columns:
-                    st.dataframe(flag_analysis[display_cols].sort_values('max_consecutive_flags', ascending=False))
+                                # Optionally log the error
+                                print(f"Trend line calculation failed: {e}")
+                
+                # Histogram of flag clusters
+                ax2 = axes[1]
+                if 'flag_clusters' in flag_analysis.columns:
+                    clusters = flag_analysis['flag_clusters'].dropna()
+                    if len(clusters) > 0:
+                        ax2.hist(clusters, bins=min(20, len(clusters)), color='lightgreen', 
+                                edgecolor='darkgreen', alpha=0.7)
+                        ax2.set_xlabel('Number of Flag Clusters')
+                        ax2.set_ylabel('Number of Stations')
+                        ax2.set_title('Distribution of Flag Clusters')
+                        ax2.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close()
+                
+                # Display flag analysis table
+                display_cols = []
+                for col in ['station_name', 'flag_clusters', 'max_consecutive_flags', 
+                           'autocorrelation_lag1', 'final_flag_pct', 'dominant_flag', 'decision']:
+                    if col in flag_analysis.columns:
+                        display_cols.append(col)
+                
+                if display_cols:
+                    # Sort by max_consecutive_flags if available
+                    if 'max_consecutive_flags' in flag_analysis.columns:
+                        st.dataframe(flag_analysis[display_cols].sort_values('max_consecutive_flags', ascending=False))
+                    else:
+                        st.dataframe(flag_analysis[display_cols])
                 else:
-                    st.dataframe(flag_analysis[display_cols])
+                    st.dataframe(flag_analysis)
             else:
-                st.dataframe(flag_analysis)
+                st.warning("Cannot merge flag analysis: missing station_name column")
+                st.dataframe(st.session_state.all_flag_analyses)
         else:
-            st.warning("Cannot merge flag analysis: missing station_name column")
-            st.dataframe(st.session_state.all_flag_analyses)
-    else:
-        st.warning("No flag analysis data available")
+            st.warning("No flag analysis data available")
     
     with tab5:
         st.subheader("Decision Matrix Results")
