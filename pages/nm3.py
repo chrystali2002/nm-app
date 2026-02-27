@@ -23,7 +23,8 @@ st.set_page_config(
     page_icon="🌡️",
     layout="wide"
 )
-
+# Initialize status_text at the top level
+status_text = st.empty()
 st.title("🌡️ New Mexico Hourly Air Temperature QA/QC Analysis")
 st.markdown("""
 This application performs enhanced multi-tier QA/QC analysis on hourly air temperature data 
