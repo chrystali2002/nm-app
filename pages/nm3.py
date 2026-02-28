@@ -23,7 +23,6 @@ st.set_page_config(
     page_icon="🌡️",
     layout="wide"
 )
-# Initialize status_text at the top level
 
 st.title("🌡️ New Mexico Hourly Air Temperature QA/QC Analysis")
 st.markdown("""
@@ -125,7 +124,7 @@ with st.expander("📋 Decision Matrix for Flagged Data", expanded=True):
             "Research Use": st.column_config.TextColumn("Research Use", width="medium")
         },
         hide_index=True,
-        use_container_width=True
+        width='stretch'
     )
     
     st.markdown("""
@@ -477,249 +476,239 @@ if st.button("🚀 Run QA/QC Analysis"):
         st.error("No stations found for the selected state!")
         st.stop()
     
-   
     # Step 2: Find stations with data in the selected years
-if 'results' not in st.session_state:
-        st.session_state.results = {}
-status_text.text("Identifying stations with data in selected years...")
-stations_with_data = set()
-base_url = None
-years_with_data_dict = {}
+    status_text.text("Identifying stations with data in selected years...")
+    stations_with_data = set()
+    base_url = None
+    years_with_data_dict = {}
 
-for i, year in enumerate(YEARS):
-    progress = i / len(YEARS) * 0.2
-    progress_bar.progress(progress)
-    
-    files, url = get_access_files(year)
-    if not files:
-        continue
-    
-    if base_url is None:
-        base_url = url
-    
+    for i, year in enumerate(YEARS):
+        progress = i / len(YEARS) * 0.2
+        progress_bar.progress(progress)
+        
+        files, url = get_access_files(year)
+        if not files:
+            continue
+        
+        if base_url is None:
+            base_url = url
+        
+        for _, row in nm_stations.iterrows():
+            usaf = str(row['USAF']).zfill(6)
+            wban = str(row['WBAN']).zfill(5)
+            fname = f"{usaf}{wban}.csv"
+            
+            if fname in files:
+                station_key = f"{row['STATION NAME']}|{usaf}|{wban}"
+                stations_with_data.add(station_key)
+                
+                if station_key not in years_with_data_dict:
+                    years_with_data_dict[station_key] = []
+                years_with_data_dict[station_key].append(year)
+
+    if not stations_with_data:
+        st.error("No stations found with data in the selected year range!")
+        st.stop()
+
+    # Create stations list
+    nm_stations_files_list = []
     for _, row in nm_stations.iterrows():
         usaf = str(row['USAF']).zfill(6)
         wban = str(row['WBAN']).zfill(5)
-        fname = f"{usaf}{wban}.csv"
+        station_key = f"{row['STATION NAME']}|{usaf}|{wban}"
         
-        if fname in files:
-            station_key = f"{row['STATION NAME']}|{usaf}|{wban}"
-            stations_with_data.add(station_key)
+        if station_key in stations_with_data:
+            years_available = years_with_data_dict[station_key]
+            year_range_str = f"{min(years_available)}-{max(years_available)}"
             
-            if station_key not in years_with_data_dict:
-                years_with_data_dict[station_key] = []
-            years_with_data_dict[station_key].append(year)
+            nm_stations_files_list.append({
+                "STATION NAME": row['STATION NAME'],
+                "USAF": usaf,
+                "WBAN": wban,
+                "LAT": row['LAT'],
+                "LON": row['LON'],
+                "FILENAME": f"{usaf}{wban}.csv",
+                "YEARS_AVAILABLE": years_available,
+                "YEAR_RANGE": year_range_str
+            })
 
-if not stations_with_data:
-    st.error("No stations found with data in the selected year range!")
-    st.stop()
+    nm_stations_files = pd.DataFrame(nm_stations_files_list)
 
-# Create stations list
-nm_stations_files_list = []
-for _, row in nm_stations.iterrows():
-    usaf = str(row['USAF']).zfill(6)
-    wban = str(row['WBAN']).zfill(5)
-    station_key = f"{row['STATION NAME']}|{usaf}|{wban}"
-    
-    if station_key in stations_with_data:
-        years_available = years_with_data_dict[station_key]
-        year_range_str = f"{min(years_available)}-{max(years_available)}"
+    st.success(f"Found {len(nm_stations_files)} stations with data in {year_range[0]}-{year_range[1]}")
+
+    # Show summary of years coverage
+    year_coverage = {}
+    for _, row in nm_stations_files.iterrows():
+        for year in row['YEARS_AVAILABLE']:
+            year_coverage[year] = year_coverage.get(year, 0) + 1
+
+    if year_coverage:
+        coverage_df = pd.DataFrame([
+            {"Year": year, "Stations": count} 
+            for year, count in sorted(year_coverage.items())
+        ])
+        st.info(f"Yearly coverage: {', '.join([f'{y}: {c}' for y, c in sorted(year_coverage.items())])}")
+
+    # Apply station sampling
+    original_station_count = len(nm_stations_files)
+    if sampling_fraction < 1.0:
+        nm_stations_files = sample_stations(nm_stations_files, sampling_fraction, random_seed)
+        st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
+
+    # Step 3: Determine nearest neighbors 
+    status_text.text("Calculating nearest neighbors...")
+    neighbor_list = []
+
+    for idx, primary in nm_stations_files.iterrows():
+        primary_coords = (primary['LAT'], primary['LON'])
+        temp_df = nm_stations_files.copy()
+        temp_df['DIST'] = temp_df.apply(
+            lambda row: geodesic(primary_coords, (row['LAT'], row['LON'])).km, axis=1
+        )
+        neighbors = temp_df[temp_df['FILENAME'] != primary['FILENAME']]
         
-        nm_stations_files_list.append({
-            "STATION NAME": row['STATION NAME'],
-            "USAF": usaf,
-            "WBAN": wban,
-            "LAT": row['LAT'],
-            "LON": row['LON'],
-            "FILENAME": f"{usaf}{wban}.csv",
-            "YEARS_AVAILABLE": years_available,
-            "YEAR_RANGE": year_range_str
-        })
+        if not neighbors.empty:
+            nearest = neighbors.sort_values('DIST').iloc[0]
+            neighbor_list.append({
+                "PRIMARY NAME": primary['STATION NAME'],
+                "PRIMARY FILE": primary['FILENAME'],
+                "PRIMARY LAT": primary['LAT'],
+                "PRIMARY LON": primary['LON'],
+                "NEIGHBOR NAME": nearest['STATION NAME'],
+                "NEIGHBOR FILE": nearest['FILENAME'],
+                "NEIGHBOR LAT": nearest['LAT'],
+                "NEIGHBOR LON": nearest['LON'],
+                "DIST_KM": nearest['DIST']
+            })
 
-nm_stations_files = pd.DataFrame(nm_stations_files_list)
+    neighbor_df = pd.DataFrame(neighbor_list)
 
-st.success(f"Found {len(nm_stations_files)} stations with data in {year_range[0]}-{year_range[1]}")
+    # Step 4: Process each station for ALL selected years
+    status_text.text("Processing stations with QA/QC...")
+    all_station_stats = []
+    all_flag_analyses = []
+    all_comparisons = []
 
-# Show summary of years coverage
-year_coverage = {}
-for _, row in nm_stations_files.iterrows():
-    for year in row['YEARS_AVAILABLE']:
-        year_coverage[year] = year_coverage.get(year, 0) + 1
+    total_stations = len(neighbor_df)
 
-if year_coverage:
-    coverage_df = pd.DataFrame([
-        {"Year": year, "Stations": count} 
-        for year, count in sorted(year_coverage.items())
-    ])
-    st.info(f"Yearly coverage: {', '.join([f'{y}: {c}' for y, c in sorted(year_coverage.items())])}")
-
-# Apply station sampling
-original_station_count = len(nm_stations_files)
-if sampling_fraction < 1.0:
-    nm_stations_files = sample_stations(nm_stations_files, sampling_fraction, random_seed)
-    st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
-
-# Step 3: Determine nearest neighbors 
-
-        
-status_text.text("Calculating nearest neighbors...")
-neighbor_list = []
-
-for idx, primary in nm_stations_files.iterrows():
-    primary_coords = (primary['LAT'], primary['LON'])
-    temp_df = nm_stations_files.copy()
-    temp_df['DIST'] = temp_df.apply(
-        lambda row: geodesic(primary_coords, (row['LAT'], row['LON'])).km, axis=1
-    )
-    neighbors = temp_df[temp_df['FILENAME'] != primary['FILENAME']]
-    
-    if not neighbors.empty:
-        nearest = neighbors.sort_values('DIST').iloc[0]
-        neighbor_list.append({
-            "PRIMARY NAME": primary['STATION NAME'],
-            "PRIMARY FILE": primary['FILENAME'],
-            "PRIMARY LAT": primary['LAT'],
-            "PRIMARY LON": primary['LON'],
-            "NEIGHBOR NAME": nearest['STATION NAME'],
-            "NEIGHBOR FILE": nearest['FILENAME'],
-            "NEIGHBOR LAT": nearest['LAT'],
-            "NEIGHBOR LON": nearest['LON'],
-            "DIST_KM": nearest['DIST']
-        })
-
-neighbor_df = pd.DataFrame(neighbor_list)
-
-# Step 4: Process each station for ALL selected years
-status_text.text("Processing stations with QA/QC...")
-all_station_stats = []
-all_flag_analyses = []
-all_comparisons = []
-
-total_stations = len(neighbor_df)
-
-if show_progress_details:
-    progress_details = st.empty()
-
-for idx, row in neighbor_df.iterrows():
-    progress = 0.2 + (idx / total_stations * 0.7)
-    progress_bar.progress(progress)
-    
-    primary_file = row['PRIMARY FILE']
-    neighbor_file = row['NEIGHBOR FILE']
-    station_name = row['PRIMARY NAME']
-    
-    status_text.text(f"Processing {station_name} ({idx+1}/{total_stations})...")
-    
     if show_progress_details:
-        progress_details.info(f"📈 Processing station {idx+1}/{total_stations}: {station_name}")
-    
-    # Load data for ALL selected years
-    all_primary_data = []
-    all_neighbor_data = []
-    
-    for year in YEARS:  # Use the exact years the user selected
-        year_url = f"https://www.ncei.noaa.gov/data/global-hourly/access/{year}/"
+        progress_details = st.empty()
+
+    for idx, row in neighbor_df.iterrows():
+        progress = 0.2 + (idx / total_stations * 0.7)
+        progress_bar.progress(progress)
         
-        df_primary_year = load_access_csv(year_url + primary_file)
-        if not df_primary_year.empty:
-            all_primary_data.append(df_primary_year)
+        primary_file = row['PRIMARY FILE']
+        neighbor_file = row['NEIGHBOR FILE']
+        station_name = row['PRIMARY NAME']
         
-        if pd.notna(neighbor_file):
-            df_neighbor_year = load_access_csv(year_url + neighbor_file)
-            if not df_neighbor_year.empty:
-                all_neighbor_data.append(df_neighbor_year)
-    
-    if not all_primary_data:
-        continue
-    
-    # Combine all years
-    df_primary = pd.concat(all_primary_data)
-    df_primary = df_primary.sort_index()
-    
-    df_neighbor = None
-    if all_neighbor_data:
-        df_neighbor = pd.concat(all_neighbor_data)
-        df_neighbor = df_neighbor.sort_index()
-    
-    # Align data
-    if df_neighbor is not None and not df_neighbor.empty:
-        df_primary, df_neighbor = df_primary.align(df_neighbor, join='inner')
-    
-    
+        status_text.text(f"Processing {station_name} ({idx+1}/{total_stations})...")
+        
+        if show_progress_details:
+            progress_details.info(f"📈 Processing station {idx+1}/{total_stations}: {station_name}")
+        
+        # Load data for ALL selected years
+        all_primary_data = []
+        all_neighbor_data = []
+        
+        for year in YEARS:  # Use the exact years the user selected
+            year_url = f"https://www.ncei.noaa.gov/data/global-hourly/access/{year}/"
+            
+            df_primary_year = load_access_csv(year_url + primary_file)
+            if not df_primary_year.empty:
+                all_primary_data.append(df_primary_year)
+            
+            if pd.notna(neighbor_file):
+                df_neighbor_year = load_access_csv(year_url + neighbor_file)
+                if not df_neighbor_year.empty:
+                    all_neighbor_data.append(df_neighbor_year)
+        
+        if not all_primary_data:
+            continue
+        
+        # Combine all years
+        df_primary = pd.concat(all_primary_data)
+        df_primary = df_primary.sort_index()
+        
+        df_neighbor = None
+        if all_neighbor_data:
+            df_neighbor = pd.concat(all_neighbor_data)
+            df_neighbor = df_neighbor.sort_index()
+        
+        # Align data
+        if df_neighbor is not None and not df_neighbor.empty:
+            df_primary, df_neighbor = df_primary.align(df_neighbor, join='inner')
         
         # Multi-tier QA/QC
-    df_primary['flag_range'] = (df_primary['T_air'] < -40) | (df_primary['T_air'] > 55)
-    df_primary['dT'] = df_primary['T_air'].diff()
-    df_primary['flag_spike'] = df_primary['dT'].abs() > 8
-    df_primary['flag_flat'] = df_primary['T_air'].rolling(12, min_periods=10).std() < 0.1
+        df_primary['flag_range'] = (df_primary['T_air'] < -40) | (df_primary['T_air'] > 55)
+        df_primary['dT'] = df_primary['T_air'].diff()
+        df_primary['flag_spike'] = df_primary['dT'].abs() > 8
+        df_primary['flag_flat'] = df_primary['T_air'].rolling(12, min_periods=10).std() < 0.1
         
-    if df_neighbor is not None and not df_neighbor.empty:
-       df_primary['anom'] = df_primary['T_air'] - df_primary['T_air'].rolling(24, min_periods=18).mean()
-       df_neighbor['anom'] = df_neighbor['T_air'] - df_neighbor['T_air'].rolling(24, min_periods=18).mean()
-       df_primary['flag_spatial'] = (df_primary['anom'] - df_neighbor['anom']).abs() > 6
-    else:
-       df_primary['flag_spatial'] = False
+        if df_neighbor is not None and not df_neighbor.empty:
+            df_primary['anom'] = df_primary['T_air'] - df_primary['T_air'].rolling(24, min_periods=18).mean()
+            df_neighbor['anom'] = df_neighbor['T_air'] - df_neighbor['T_air'].rolling(24, min_periods=18).mean()
+            df_primary['flag_spatial'] = (df_primary['anom'] - df_neighbor['anom']).abs() > 6
+        else:
+            df_primary['flag_spatial'] = False
         
-       df_primary['heatwave'] = df_primary['T_air'] > 40
-       df_primary['final_flag'] = (
-           df_primary['flag_range'] |
-           df_primary['flag_spike'] |
-           df_primary['flag_flat'] |
-           (df_primary['flag_spatial'] & ~df_primary['heatwave'])
-       )
+        df_primary['heatwave'] = df_primary['T_air'] > 40
+        df_primary['final_flag'] = (
+            df_primary['flag_range'] |
+            df_primary['flag_spike'] |
+            df_primary['flag_flat'] |
+            (df_primary['flag_spatial'] & ~df_primary['heatwave'])
+        )
         
         # Create validated dataset
-       df_validated = df_primary['T_air'].where(~df_primary['final_flag'])
+        df_validated = df_primary['T_air'].where(~df_primary['final_flag'])
         
         # Calculate statistics
-       flags_df = df_primary[['flag_range', 'flag_spike', 'flag_flat', 'flag_spatial', 'heatwave', 'final_flag']]
+        flags_df = df_primary[['flag_range', 'flag_spike', 'flag_flat', 'flag_spatial', 'heatwave', 'final_flag']]
         
-       flag_stats = calculate_flag_statistics(df_primary, flags_df)
-       flag_stats['station_name'] = station_name
-       flag_stats['neighbor_name'] = row['NEIGHBOR NAME']
-       flag_stats['neighbor_dist'] = row['DIST_KM']
-       all_station_stats.append(flag_stats)
+        flag_stats = calculate_flag_statistics(df_primary, flags_df)
+        flag_stats['station_name'] = station_name
+        flag_stats['neighbor_name'] = row['NEIGHBOR NAME']
+        flag_stats['neighbor_dist'] = row['DIST_KM']
+        all_station_stats.append(flag_stats)
         
-       clustering_stats = analyze_flag_clustering(flags_df)
-       clustering_stats['station_name'] = station_name
-       all_flag_analyses.append(clustering_stats)
+        clustering_stats = analyze_flag_clustering(flags_df)
+        clustering_stats['station_name'] = station_name
+        all_flag_analyses.append(clustering_stats)
         
-       comparison_stats = compare_raw_vs_validated(df_primary, df_validated)
-       comparison_stats['station_name'] = station_name
-       all_comparisons.append(comparison_stats)
+        comparison_stats = compare_raw_vs_validated(df_primary, df_validated)
+        comparison_stats['station_name'] = station_name
+        all_comparisons.append(comparison_stats)
         
         # Store results for display
-       st.session_state.results[station_name] = {
-           'df_primary': df_primary,
-           'df_validated': df_validated,
-           'flags_df': flags_df,
-           'neighbor_name': row['NEIGHBOR NAME'],
-           'dist_km': row['DIST_KM'],
-           'flag_stats': flag_stats,
-           'comparison_stats': comparison_stats,
-           'clustering_stats': clustering_stats
-       }
+        st.session_state.results[station_name] = {
+            'df_primary': df_primary,
+            'df_validated': df_validated,
+            'flags_df': flags_df,
+            'neighbor_name': row['NEIGHBOR NAME'],
+            'dist_km': row['DIST_KM'],
+            'flag_stats': flag_stats,
+            'comparison_stats': comparison_stats,
+            'clustering_stats': clustering_stats
+        }
     
     progress_bar.progress(1.0)
     if show_progress_details:
         progress_details.empty()
     status_text.text("Analysis complete!")
     
-   
     # Store aggregated results
     st.session_state.all_station_stats = pd.DataFrame(all_station_stats)
     st.session_state.all_flag_analyses = pd.DataFrame(all_flag_analyses)
     st.session_state.all_comparisons = pd.DataFrame(all_comparisons)
     st.session_state.neighbor_df = neighbor_df
-# For backward compatibility, set first_year to the start of the range
+    # For backward compatibility, set first_year to the start of the range
     st.session_state.first_year = year_range[0]
     st.session_state.year_end = year_range[1]  # Also store end year
     st.session_state.sampling_fraction = sampling_fraction
     st.session_state.original_station_count = original_station_count
 
     st.success(f"✅ Processed {len(all_station_stats)} stations successfully for years {year_range[0]}-{year_range[1]}!")
-
-   
     
     if sampling_fraction < 1.0:
         st.info(f"💡 This was a {int(sampling_fraction*100)}% sample analysis. Select 'Full Analysis' from the sidebar to process all {original_station_count} stations.")
@@ -831,12 +820,12 @@ if 'all_station_stats' in st.session_state:
                     df_display = df_display.sort_values('final_flag_pct', ascending=False)
                 
                 styled_df = df_display.style.applymap(color_decision, subset=['decision'])
-                st.dataframe(styled_df, use_container_width=True)
+                st.dataframe(styled_df, width='stretch')
             else:
                 # Sort by flag percentage if available
                 if 'final_flag_pct' in df_display.columns:
                     df_display = df_display.sort_values('final_flag_pct', ascending=False)
-                st.dataframe(df_display, use_container_width=True)
+                st.dataframe(df_display, width='stretch')
         else:
             st.warning("No display columns available")
             st.dataframe(overview_df)
@@ -1245,14 +1234,14 @@ if 'all_station_stats' in st.session_state:
                 if display_cols:
                     # Sort by max_consecutive_flags if available
                     if 'max_consecutive_flags' in flag_analysis.columns:
-                        st.dataframe(flag_analysis[display_cols].sort_values('max_consecutive_flags', ascending=False))
+                        st.dataframe(flag_analysis[display_cols].sort_values('max_consecutive_flags', ascending=False), width='stretch')
                     else:
-                        st.dataframe(flag_analysis[display_cols])
+                        st.dataframe(flag_analysis[display_cols], width='stretch')
                 else:
-                    st.dataframe(flag_analysis)
+                    st.dataframe(flag_analysis, width='stretch')
             else:
                 st.warning("Cannot merge flag analysis: missing station_name column")
-                st.dataframe(st.session_state.all_flag_analyses)
+                st.dataframe(st.session_state.all_flag_analyses, width='stretch')
         else:
             st.warning("No flag analysis data available")
     
@@ -1271,7 +1260,7 @@ if 'all_station_stats' in st.session_state:
                     st.bar_chart(decision_summary.set_index('Decision'))
                 
                 with col2:
-                    st.dataframe(decision_summary)
+                    st.dataframe(decision_summary, width='stretch')
                 
                 # Show stations by decision category
                 st.subheader("Stations by Decision Category")
@@ -1296,12 +1285,12 @@ if 'all_station_stats' in st.session_state:
                         display_cols.append(col)
                 
                 if display_cols:
-                    st.dataframe(filtered_stats[display_cols])
+                    st.dataframe(filtered_stats[display_cols], width='stretch')
                 else:
-                    st.dataframe(filtered_stats)
+                    st.dataframe(filtered_stats, width='stretch')
             else:
                 st.warning("Decision column not found in data")
-                st.dataframe(st.session_state.all_station_stats)
+                st.dataframe(st.session_state.all_station_stats, width='stretch')
         else:
             st.warning("No decision matrix data available")
     
