@@ -24,7 +24,7 @@ st.set_page_config(
     layout="wide"
 )
 # Initialize status_text at the top level
-status_text = st.empty()
+
 st.title("🌡️ New Mexico Hourly Air Temperature QA/QC Analysis")
 st.markdown("""
 This application performs enhanced multi-tier QA/QC analysis on hourly air temperature data 
@@ -477,7 +477,7 @@ if st.button("🚀 Run QA/QC Analysis"):
         st.error("No stations found for the selected state!")
         st.stop()
     
-    # Step 2: Find first year with data
+   
     # Step 2: Find stations with data in the selected years
 if 'results' not in st.session_state:
         st.session_state.results = {}
@@ -488,7 +488,7 @@ years_with_data_dict = {}
 
 for i, year in enumerate(YEARS):
     progress = i / len(YEARS) * 0.2
-    (progress)
+    progress_bar.progress(progress)
     
     files, url = get_access_files(year)
     if not files:
@@ -560,13 +560,7 @@ if sampling_fraction < 1.0:
     st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
 
 # Step 3: Determine nearest neighbors 
-status_text.text("Loading station metadata...")
-    nm_stations = load_station_metadata(STATE_CODE)
-    st.write(f"Found {len(nm_stations)} {STATE_CODE} stations in metadata.")
-    
-    if len(nm_stations) == 0:
-        st.error("No stations found for the selected state!")
-        st.stop()
+
         
 status_text.text("Calculating nearest neighbors...")
 neighbor_list = []
@@ -654,64 +648,64 @@ for idx, row in neighbor_df.iterrows():
     
         
         # Multi-tier QA/QC
-        df_primary['flag_range'] = (df_primary['T_air'] < -40) | (df_primary['T_air'] > 55)
-        df_primary['dT'] = df_primary['T_air'].diff()
-        df_primary['flag_spike'] = df_primary['dT'].abs() > 8
-        df_primary['flag_flat'] = df_primary['T_air'].rolling(12, min_periods=10).std() < 0.1
+    df_primary['flag_range'] = (df_primary['T_air'] < -40) | (df_primary['T_air'] > 55)
+    df_primary['dT'] = df_primary['T_air'].diff()
+    df_primary['flag_spike'] = df_primary['dT'].abs() > 8
+    df_primary['flag_flat'] = df_primary['T_air'].rolling(12, min_periods=10).std() < 0.1
         
-        if df_neighbor is not None and not df_neighbor.empty:
-            df_primary['anom'] = df_primary['T_air'] - df_primary['T_air'].rolling(24, min_periods=18).mean()
-            df_neighbor['anom'] = df_neighbor['T_air'] - df_neighbor['T_air'].rolling(24, min_periods=18).mean()
-            df_primary['flag_spatial'] = (df_primary['anom'] - df_neighbor['anom']).abs() > 6
-        else:
-            df_primary['flag_spatial'] = False
+    if df_neighbor is not None and not df_neighbor.empty:
+       df_primary['anom'] = df_primary['T_air'] - df_primary['T_air'].rolling(24, min_periods=18).mean()
+       df_neighbor['anom'] = df_neighbor['T_air'] - df_neighbor['T_air'].rolling(24, min_periods=18).mean()
+       df_primary['flag_spatial'] = (df_primary['anom'] - df_neighbor['anom']).abs() > 6
+    else:
+       df_primary['flag_spatial'] = False
         
-        df_primary['heatwave'] = df_primary['T_air'] > 40
-        df_primary['final_flag'] = (
-            df_primary['flag_range'] |
-            df_primary['flag_spike'] |
-            df_primary['flag_flat'] |
-            (df_primary['flag_spatial'] & ~df_primary['heatwave'])
-        )
+       df_primary['heatwave'] = df_primary['T_air'] > 40
+       df_primary['final_flag'] = (
+           df_primary['flag_range'] |
+           df_primary['flag_spike'] |
+           df_primary['flag_flat'] |
+           (df_primary['flag_spatial'] & ~df_primary['heatwave'])
+       )
         
         # Create validated dataset
-        df_validated = df_primary['T_air'].where(~df_primary['final_flag'])
+       df_validated = df_primary['T_air'].where(~df_primary['final_flag'])
         
         # Calculate statistics
-        flags_df = df_primary[['flag_range', 'flag_spike', 'flag_flat', 'flag_spatial', 'heatwave', 'final_flag']]
+       flags_df = df_primary[['flag_range', 'flag_spike', 'flag_flat', 'flag_spatial', 'heatwave', 'final_flag']]
         
-        flag_stats = calculate_flag_statistics(df_primary, flags_df)
-        flag_stats['station_name'] = station_name
-        flag_stats['neighbor_name'] = row['NEIGHBOR NAME']
-        flag_stats['neighbor_dist'] = row['DIST_KM']
-        all_station_stats.append(flag_stats)
+       flag_stats = calculate_flag_statistics(df_primary, flags_df)
+       flag_stats['station_name'] = station_name
+       flag_stats['neighbor_name'] = row['NEIGHBOR NAME']
+       flag_stats['neighbor_dist'] = row['DIST_KM']
+       all_station_stats.append(flag_stats)
         
-        clustering_stats = analyze_flag_clustering(flags_df)
-        clustering_stats['station_name'] = station_name
-        all_flag_analyses.append(clustering_stats)
+       clustering_stats = analyze_flag_clustering(flags_df)
+       clustering_stats['station_name'] = station_name
+       all_flag_analyses.append(clustering_stats)
         
-        comparison_stats = compare_raw_vs_validated(df_primary, df_validated)
-        comparison_stats['station_name'] = station_name
-        all_comparisons.append(comparison_stats)
+       comparison_stats = compare_raw_vs_validated(df_primary, df_validated)
+       comparison_stats['station_name'] = station_name
+       all_comparisons.append(comparison_stats)
         
         # Store results for display
-        st.session_state.results[station_name] = {
-            'df_primary': df_primary,
-            'df_validated': df_validated,
-            'flags_df': flags_df,
-            'neighbor_name': row['NEIGHBOR NAME'],
-            'dist_km': row['DIST_KM'],
-            'flag_stats': flag_stats,
-            'comparison_stats': comparison_stats,
-            'clustering_stats': clustering_stats
-        }
+       st.session_state.results[station_name] = {
+           'df_primary': df_primary,
+           'df_validated': df_validated,
+           'flags_df': flags_df,
+           'neighbor_name': row['NEIGHBOR NAME'],
+           'dist_km': row['DIST_KM'],
+           'flag_stats': flag_stats,
+           'comparison_stats': comparison_stats,
+           'clustering_stats': clustering_stats
+       }
     
     progress_bar.progress(1.0)
     if show_progress_details:
         progress_details.empty()
     status_text.text("Analysis complete!")
     
-    # Store aggregated results
+   
     # Store aggregated results
     st.session_state.all_station_stats = pd.DataFrame(all_station_stats)
     st.session_state.all_flag_analyses = pd.DataFrame(all_flag_analyses)
