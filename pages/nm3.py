@@ -555,33 +555,60 @@ if st.button("🚀 Run QA/QC Analysis"):
         nm_stations_files = sample_stations(nm_stations_files, sampling_fraction, random_seed)
         st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
 
-    # Step 3: Determine nearest neighbors 
+    # Step 3: Determine nearest neighbors
+            # Step 3: Determine nearest neighbors - EFFICIENT VERSION
     status_text.text("Calculating nearest neighbors...")
     neighbor_list = []
-
-    for idx, primary in nm_stations_files.iterrows():
-        primary_coords = (primary['LAT'], primary['LON'])
-        temp_df = nm_stations_files.copy()
-        temp_df['DIST'] = temp_df.apply(
-            lambda row: geodesic(primary_coords, (row['LAT'], row['LON'])).km, axis=1
-        )
-        neighbors = temp_df[temp_df['FILENAME'] != primary['FILENAME']]
+    
+    # Extract coordinates once
+    coords = nm_stations_files[['LAT', 'LON']].values
+    names = nm_stations_files['STATION NAME'].values
+    files = nm_stations_files['FILENAME'].values
+    
+    for i, (primary_name, primary_file, primary_coord) in enumerate(zip(names, files, coords)):
+        min_dist = float('inf')
+        nearest_name = None
+        nearest_file = None
+        nearest_coord = None
         
-        if not neighbors.empty:
-            nearest = neighbors.sort_values('DIST').iloc[0]
+        # Find the closest station
+        for j, (other_name, other_file, other_coord) in enumerate(zip(names, files, coords)):
+            if i != j:  # Skip self
+                dist = geodesic(primary_coord, other_coord).km
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_name = other_name
+                    nearest_file = other_file
+                    nearest_coord = other_coord
+        
+        if nearest_name:
             neighbor_list.append({
-                "PRIMARY NAME": primary['STATION NAME'],
-                "PRIMARY FILE": primary['FILENAME'],
-                "PRIMARY LAT": primary['LAT'],
-                "PRIMARY LON": primary['LON'],
-                "NEIGHBOR NAME": nearest['STATION NAME'],
-                "NEIGHBOR FILE": nearest['FILENAME'],
-                "NEIGHBOR LAT": nearest['LAT'],
-                "NEIGHBOR LON": nearest['LON'],
-                "DIST_KM": nearest['DIST']
+                "PRIMARY NAME": primary_name,
+                "PRIMARY FILE": primary_file,
+                "PRIMARY LAT": primary_coord[0],
+                "PRIMARY LON": primary_coord[1],
+                "NEIGHBOR NAME": nearest_name,
+                "NEIGHBOR FILE": nearest_file,
+                "NEIGHBOR LAT": nearest_coord[0] if nearest_coord else None,
+                "NEIGHBOR LON": nearest_coord[1] if nearest_coord else None,
+                "DIST_KM": min_dist
+            })
+        else:
+            neighbor_list.append({
+                "PRIMARY NAME": primary_name,
+                "PRIMARY FILE": primary_file,
+                "PRIMARY LAT": primary_coord[0],
+                "PRIMARY LON": primary_coord[1],
+                "NEIGHBOR NAME": None,
+                "NEIGHBOR FILE": None,
+                "NEIGHBOR LAT": None,
+                "NEIGHBOR LON": None,
+                "DIST_KM": None
             })
 
     neighbor_df = pd.DataFrame(neighbor_list)
+    
+   
 
     # Step 4: Process each station for ALL selected years
     status_text.text("Processing stations with QA/QC...")
