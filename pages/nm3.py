@@ -556,49 +556,60 @@ if st.button("🚀 Run QA/QC Analysis"):
         st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
 
     # Step 3: Determine nearest neighbors
-            # Step 3: Determine nearest neighbors - EFFICIENT VERSION
+         # Step 3: Determine nearest neighbors - FIXED VERSION
     status_text.text("Calculating nearest neighbors...")
     neighbor_list = []
     
-    # Extract coordinates once
-    coords = nm_stations_files[['LAT', 'LON']].values
-    names = nm_stations_files['STATION NAME'].values
-    files = nm_stations_files['FILENAME'].values
+    # Create lists of station data
+    station_names = nm_stations_files['STATION NAME'].tolist()
+    station_files = nm_stations_files['FILENAME'].tolist()
+    station_lats = nm_stations_files['LAT'].tolist()
+    station_lons = nm_stations_files['LON'].tolist()
     
-    for i, (primary_name, primary_file, primary_coord) in enumerate(zip(names, files, coords)):
+    for i in range(len(station_names)):
+        primary_name = station_names[i]
+        primary_file = station_files[i]
+        primary_lat = station_lats[i]
+        primary_lon = station_lons[i]
+        primary_coords = (primary_lat, primary_lon)
+        
         min_dist = float('inf')
         nearest_name = None
         nearest_file = None
-        nearest_coord = None
+        nearest_lat = None
+        nearest_lon = None
         
         # Find the closest station
-        for j, (other_name, other_file, other_coord) in enumerate(zip(names, files, coords)):
+        for j in range(len(station_names)):
             if i != j:  # Skip self
-                dist = geodesic(primary_coord, other_coord).km
+                other_coords = (station_lats[j], station_lons[j])
+                dist = geodesic(primary_coords, other_coords).km
+                
                 if dist < min_dist:
                     min_dist = dist
-                    nearest_name = other_name
-                    nearest_file = other_file
-                    nearest_coord = other_coord
+                    nearest_name = station_names[j]
+                    nearest_file = station_files[j]
+                    nearest_lat = station_lats[j]
+                    nearest_lon = station_lons[j]
         
         if nearest_name:
             neighbor_list.append({
                 "PRIMARY NAME": primary_name,
                 "PRIMARY FILE": primary_file,
-                "PRIMARY LAT": primary_coord[0],
-                "PRIMARY LON": primary_coord[1],
+                "PRIMARY LAT": primary_lat,
+                "PRIMARY LON": primary_lon,
                 "NEIGHBOR NAME": nearest_name,
                 "NEIGHBOR FILE": nearest_file,
-                "NEIGHBOR LAT": nearest_coord[0] if nearest_coord else None,
-                "NEIGHBOR LON": nearest_coord[1] if nearest_coord else None,
+                "NEIGHBOR LAT": nearest_lat,
+                "NEIGHBOR LON": nearest_lon,
                 "DIST_KM": min_dist
             })
         else:
             neighbor_list.append({
                 "PRIMARY NAME": primary_name,
                 "PRIMARY FILE": primary_file,
-                "PRIMARY LAT": primary_coord[0],
-                "PRIMARY LON": primary_coord[1],
+                "PRIMARY LAT": primary_lat,
+                "PRIMARY LON": primary_lon,
                 "NEIGHBOR NAME": None,
                 "NEIGHBOR FILE": None,
                 "NEIGHBOR LAT": None,
@@ -607,6 +618,25 @@ if st.button("🚀 Run QA/QC Analysis"):
             })
 
     neighbor_df = pd.DataFrame(neighbor_list)
+    
+    # Display neighbor statistics
+    if not neighbor_df.empty:
+        valid_neighbors = neighbor_df[neighbor_df['DIST_KM'].notna()]
+        if not valid_neighbors.empty:
+            avg_dist = valid_neighbors['DIST_KM'].mean()
+            min_dist = valid_neighbors['DIST_KM'].min()
+            max_dist = valid_neighbors['DIST_KM'].max()
+            
+            st.info(f"📏 Average neighbor distance: {avg_dist:.1f} km")
+            st.info(f"📏 Min neighbor distance: {min_dist:.1f} km")
+            st.info(f"📏 Max neighbor distance: {max_dist:.1f} km")
+            
+            # Warn if distances seem too large
+            if avg_dist > 300:
+                st.warning("⚠️ Average neighbor distance is very large (>300 km). This might indicate sparse station coverage.")
+        else:
+            st.warning("No valid neighbor distances found")       
+   
     
    
 
