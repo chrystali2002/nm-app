@@ -479,6 +479,8 @@ if st.button("🚀 Run QA/QC Analysis"):
     
     # Step 2: Find first year with data
     # Step 2: Find stations with data in the selected years
+if 'results' not in st.session_state:
+        st.session_state.results = {}
 status_text.text("Identifying stations with data in selected years...")
 stations_with_data = set()
 base_url = None
@@ -486,7 +488,7 @@ years_with_data_dict = {}
 
 for i, year in enumerate(YEARS):
     progress = i / len(YEARS) * 0.2
-    progress_bar.progress(progress)
+    (progress)
     
     files, url = get_access_files(year)
     if not files:
@@ -557,7 +559,15 @@ if sampling_fraction < 1.0:
     nm_stations_files = sample_stations(nm_stations_files, sampling_fraction, random_seed)
     st.info(f"📊 Sampled {len(nm_stations_files)} out of {original_station_count} stations ({int(sampling_fraction*100)}%) for this analysis")
 
-# Step 3: Determine nearest neighbors (same as before)
+# Step 3: Determine nearest neighbors 
+status_text.text("Loading station metadata...")
+    nm_stations = load_station_metadata(STATE_CODE)
+    st.write(f"Found {len(nm_stations)} {STATE_CODE} stations in metadata.")
+    
+    if len(nm_stations) == 0:
+        st.error("No stations found for the selected state!")
+        st.stop()
+        
 status_text.text("Calculating nearest neighbors...")
 neighbor_list = []
 
