@@ -49,21 +49,6 @@ In agricultural and climate science, a single erroneous temperature spike can le
 
 ---
 
-## 🚀 Getting Started
-
-### Prerequisites
-* Python 3.9+
-* [Streamlit](https://streamlit.io/)
-* Pandas, Numpy, and Plotly
-
-### Installation
-1. Clone the repo:
-   ```bash
-   git clone [https://github.com/yourusername/asos-quality-assurance.git](https://github.com/yourusername/asos-quality-assurance.git)
-
-https://asosqualityassurance.streamlit.app/
-
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
 
 ### How to run it on your own machine
 
