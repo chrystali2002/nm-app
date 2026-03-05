@@ -28,7 +28,7 @@ Beyond simple range checks, the app applies sophisticated consistency tests to i
 
 ### 📊 Interactive Visualization
 Dynamic plotting of key meteorological parameters, including:
-* Temperature Extremes ($T_{max}$, $T_{min}$)
+* Temperature Extremes ($T_{max}$, $T_{min}$)  (starting with Temperature and other variables will be included)
 * Precipitation Accumulation
 
 
