@@ -1,2 +1,6 @@
 python3-dev
 build-essential
+
+libgdal-dev
+libproj-dev
+g++
