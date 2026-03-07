@@ -17,3 +17,6 @@ geopy
 scipy
 shapely
 pyshp
+
+plotly
+scikit-learn
