@@ -307,6 +307,92 @@ if model_type in ["Random Forest (Temperature Prediction)", "Ensemble (Both)"]:
             'error_threshold': error_threshold
         }
 
+# Add this to your analysis to visualize the differences
+st.subheader("ML vs Rule Flag Characteristics")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    # Temperature distribution comparison
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=df_ml_only['Temperature'],
+        name='ML Only',
+        opacity=0.7,
+        marker_color='orange',
+        nbinsx=30
+    ))
+    fig.add_trace(go.Histogram(
+        x=df_rule_only['Temperature'],
+        name='Rule Only',
+        opacity=0.7,
+        marker_color='red',
+        nbinsx=30
+    ))
+    fig.update_layout(
+        title="Temperature Distribution: ML vs Rule",
+        xaxis_title="Temperature (°C)",
+        yaxis_title="Frequency",
+        barmode='overlay'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+with col2:
+    # Hour of day pattern
+    fig2 = go.Figure()
+    fig2.add_trace(go.Histogram(
+        x=df_ml_only['Hour'],
+        name='ML Only',
+        opacity=0.7,
+        marker_color='orange',
+        nbinsx=24
+    ))
+    fig2.add_trace(go.Histogram(
+        x=df_rule_only['Hour'],
+        name='Rule Only',
+        opacity=0.7,
+        marker_color='red',
+        nbinsx=24
+    ))
+    fig2.update_layout(
+        title="Flag Distribution by Hour",
+        xaxis_title="Hour of Day",
+        yaxis_title="Frequency",
+        barmode='overlay'
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+# Rolling statistics comparison
+st.subheader("Rolling Statistics Comparison")
+
+fig3 = make_subplots(
+    rows=1, cols=2,
+    subplot_titles=('Rolling Mean', 'Rolling Std')
+)
+
+# Rolling Mean
+fig3.add_trace(
+    go.Box(y=df_ml_only['Rolling Mean 6h'].dropna(), name='ML Only', marker_color='orange'),
+    row=1, col=1
+)
+fig3.add_trace(
+    go.Box(y=df_rule_only['Rolling Mean 6h'].dropna(), name='Rule Only', marker_color='red'),
+    row=1, col=1
+)
+
+# Rolling Std
+fig3.add_trace(
+    go.Box(y=df_ml_only['Rolling Std 6h'].dropna(), name='ML Only', marker_color='orange'),
+    row=1, col=2
+)
+fig3.add_trace(
+    go.Box(y=df_rule_only['Rolling Std 6h'].dropna(), name='Rule Only', marker_color='red'),
+    row=1, col=2
+)
+
+fig3.update_layout(height=400, showlegend=False)
+st.plotly_chart(fig3, use_container_width=True)
+
 # ============================================================================
 # Display Results
 # ============================================================================
