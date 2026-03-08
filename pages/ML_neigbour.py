@@ -868,3 +868,390 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview Statistics",
     "🎯 Agreement Analysis",
     "📈 Temporal Patterns",
+    "🌡️ Temperature Analysis",
+    "📉 Statistical Comparison",
+    "🔍 Case Studies"
+])
+
+with tab1:
+    st.header("📊 Overview Statistics")
+    
+    total_points = len(comparison_df)
+    rule_count = (comparison_df['Rule Flag'] == 1).sum()
+    ml_count = (comparison_df['ML Flag'] == 1).sum()
+    both_count = ((comparison_df['Rule Flag'] == 1) & (comparison_df['ML Flag'] == 1)).sum()
+    rule_only = ((comparison_df['Rule Flag'] == 1) & (comparison_df['ML Flag'] == 0)).sum()
+    ml_only = ((comparison_df['Rule Flag'] == 0) & (comparison_df['ML Flag'] == 1)).sum()
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("Total Points", f"{total_points:,}")
+    with col2:
+        st.metric("Rule Flags", f"{rule_count:,}", 
+                 delta=f"{(rule_count/total_points*100):.1f}%")
+    with col3:
+        st.metric("ML Flags", f"{ml_count:,}", 
+                 delta=f"{(ml_count/total_points*100):.1f}%",
+                 delta_color="inverse")
+    with col4:
+        st.metric("Both", f"{both_count:,}")
+    with col5:
+        agreement = (both_count + (total_points - rule_count - ml_count + both_count)) / total_points * 100
+        st.metric("Agreement Rate", f"{agreement:.1f}%")
+    
+    st.markdown("---")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        flag_counts = comparison_df['Flag Type'].value_counts()
+        fig = go.Figure(data=[go.Pie(
+            labels=flag_counts.index,
+            values=flag_counts.values,
+            hole=0.4,
+            marker_colors=['#2E86AB', '#A23B72', '#F18F01', '#C73E1D'],
+            textinfo='label+percent',
+            textposition='outside'
+        )])
+        fig.update_layout(title="Distribution of Flag Types", height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        summary_stats = []
+        for flag_type in ['ML Only', 'Rule Only', 'Both', 'Neither']:
+            subset = comparison_df[comparison_df['Flag Type'] == flag_type]
+            if len(subset) > 0:
+                summary_stats.append({
+                    'Flag Type': flag_type,
+                    'Count': len(subset),
+                    'Percentage': f"{len(subset)/total_points*100:.2f}%",
+                    'Mean Temp': f"{subset['Temperature'].mean():.2f}°C",
+                    'Std Dev': f"{subset['Temperature'].std():.2f}°C"
+                })
+        st.dataframe(pd.DataFrame(summary_stats), use_container_width=True, hide_index=True)
+    
+    st.markdown("---")
+    
+    st.subheader("🔍 Key Insights")
+    insights = []
+    
+    if ml_count > rule_count:
+        ratio = ml_count / rule_count
+        insights.append(f"✅ **ML is {ratio:.1f}x more sensitive** than rule-based")
+    else:
+        ratio = rule_count / ml_count
+        insights.append(f"⚠️ **Rule-based is {ratio:.1f}x more sensitive** than ML")
+    
+    overlap_ratio = both_count / min(rule_count, ml_count) * 100 if min(rule_count, ml_count) > 0 else 0
+    if overlap_ratio > 80:
+        insights.append(f"🎯 **High agreement** ({overlap_ratio:.1f}% overlap)")
+    elif overlap_ratio > 50:
+        insights.append(f"🟡 **Moderate agreement** ({overlap_ratio:.1f}% overlap)")
+    else:
+        insights.append(f"🔴 **Low agreement** ({overlap_ratio:.1f}% overlap)")
+    
+    if ml_only > rule_only:
+        insights.append(f"🤖 **ML specializes** in finding {ml_only} unique patterns")
+    else:
+        insights.append(f"📏 **Rules specialize** in finding {rule_only} unique patterns")
+    
+    for insight in insights:
+        st.info(insight)
+
+with tab2:
+    st.header("🎯 Agreement Analysis")
+    
+    y_true = comparison_df['Rule Flag'].values
+    y_pred = comparison_df['ML Flag'].values
+    
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    
+    accuracy = (tp + tn) / (tp + tn + fp + fn)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    kappa = cohen_kappa_score(y_true, y_pred)
+    mcc = matthews_corrcoef(y_true, y_pred)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Accuracy", f"{accuracy:.3f}")
+        st.metric("Precision", f"{precision:.3f}")
+    with col2:
+        st.metric("Recall", f"{recall:.3f}")
+        st.metric("Specificity", f"{specificity:.3f}")
+    with col3:
+        st.metric("F1 Score", f"{f1:.3f}")
+        st.metric("Cohen's Kappa", f"{kappa:.3f}")
+    with col4:
+        st.metric("MCC", f"{mcc:.3f}")
+        st.metric("Youden's J", f"{recall + specificity - 1:.3f}")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        fig = go.Figure(data=go.Heatmap(
+            z=cm,
+            x=['ML: Normal', 'ML: Flagged'],
+            y=['Rule: Normal', 'Rule: Flagged'],
+            colorscale='Blues',
+            text=cm,
+            texttemplate='%{text}',
+            textfont={"size": 16},
+            showscale=False
+        ))
+        fig.update_layout(title="Confusion Matrix", height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("📖 Interpretation")
+        interpretations = [
+            f"**True Negatives:** {tn:,} points - Both agree normal",
+            f"**True Positives:** {tp:,} points - Both agree anomalous",
+            f"**False Positives:** {fp:,} points - ML flagged only",
+            f"**False Negatives:** {fn:,} points - Rules flagged only"
+        ]
+        for interp in interpretations:
+            st.markdown(interp)
+        
+        if kappa > 0.8:
+            st.success(f"**Almost perfect agreement** (Kappa = {kappa:.3f})")
+        elif kappa > 0.6:
+            st.success(f"**Substantial agreement** (Kappa = {kappa:.3f})")
+        elif kappa > 0.4:
+            st.warning(f"**Moderate agreement** (Kappa = {kappa:.3f})")
+        else:
+            st.error(f"**Slight agreement** (Kappa = {kappa:.3f})")
+
+with tab3:
+    st.header("📈 Temporal Pattern Analysis")
+    
+    hourly_stats = comparison_df.groupby('Hour').agg({
+        'Rule Flag': 'mean',
+        'ML Flag': 'mean',
+        'Temperature': 'mean'
+    }).reset_index()
+    
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    fig.add_trace(
+        go.Bar(x=hourly_stats['Hour'], y=hourly_stats['Rule Flag'] * 100,
+               name='Rule Flag Rate', marker_color='red', opacity=0.7),
+        secondary_y=False
+    )
+    
+    fig.add_trace(
+        go.Bar(x=hourly_stats['Hour'], y=hourly_stats['ML Flag'] * 100,
+               name='ML Flag Rate', marker_color='orange', opacity=0.7),
+        secondary_y=False
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=hourly_stats['Hour'], y=hourly_stats['Temperature'],
+                  name='Avg Temperature', line=dict(color='blue', width=2),
+                  mode='lines+markers'),
+        secondary_y=True
+    )
+    
+    fig.update_layout(title="Flag Rates by Hour of Day", height=400)
+    fig.update_yaxes(title_text="Flag Rate (%)", secondary_y=False)
+    fig.update_yaxes(title_text="Average Temperature (°C)", secondary_y=True)
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    hourly_diff = hourly_stats.copy()
+    hourly_diff['Diff'] = abs(hourly_stats['ML Flag'] - hourly_stats['Rule Flag']) * 100
+    max_diff_hour = hourly_diff.loc[hourly_diff['Diff'].idxmax()]
+    
+    st.info(f"""
+    **Peak Disagreement Hour**: {int(max_diff_hour['Hour']):02d}:00
+    - Rule Rate: {max_diff_hour['Rule Flag']*100:.1f}%
+    - ML Rate: {max_diff_hour['ML Flag']*100:.1f}%
+    - Difference: {max_diff_hour['Diff']:.1f}%
+    """)
+
+with tab4:
+    st.header("🌡️ Temperature Analysis")
+    
+    fig = go.Figure()
+    
+    for flag_type, color in zip(['ML Only', 'Rule Only', 'Both', 'Neither'],
+                                 ['orange', 'red', 'purple', 'gray']):
+        subset = comparison_df[comparison_df['Flag Type'] == flag_type]['Temperature'].dropna()
+        if len(subset) > 0:
+            fig.add_trace(go.Violin(
+                y=subset,
+                name=flag_type,
+                box_visible=True,
+                meanline_visible=True,
+                fillcolor=color,
+                opacity=0.7,
+                line_color='black'
+            ))
+    
+    fig.update_layout(title="Temperature Distribution by Flag Type", height=500)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    bins = np.arange(-30, 41, 5)
+    labels = [f"{bins[i]}-{bins[i+1]}°C" for i in range(len(bins)-1)]
+    
+    comparison_df['TempBin'] = pd.cut(comparison_df['Temperature'], bins=bins, labels=labels)
+    
+    bin_stats = comparison_df.groupby('TempBin').agg({
+        'Rule Flag': 'sum',
+        'ML Flag': 'sum',
+        'Temperature': 'count'
+    }).rename(columns={'Temperature': 'Total'})
+    
+    bin_stats['Rule Rate'] = (bin_stats['Rule Flag'] / bin_stats['Total'] * 100).round(1)
+    bin_stats['ML Rate'] = (bin_stats['ML Flag'] / bin_stats['Total'] * 100).round(1)
+    
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(
+        x=bin_stats.index, y=bin_stats['Rule Rate'],
+        name='Rule Rate', marker_color='red', opacity=0.7
+    ))
+    fig2.add_trace(go.Bar(
+        x=bin_stats.index, y=bin_stats['ML Rate'],
+        name='ML Rate', marker_color='orange', opacity=0.7
+    ))
+    
+    fig2.update_layout(title="Flag Rates by Temperature Range", height=400)
+    st.plotly_chart(fig2, use_container_width=True)
+
+with tab5:
+    st.header("📉 Statistical Comparison")
+    
+    ml_only_temp = comparison_df[comparison_df['Flag Type'] == 'ML Only']['Temperature'].dropna()
+    rule_only_temp = comparison_df[comparison_df['Flag Type'] == 'Rule Only']['Temperature'].dropna()
+    
+    if len(ml_only_temp) > 0 and len(rule_only_temp) > 0:
+        t_stat, p_value = stats.ttest_ind(ml_only_temp, rule_only_temp)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("T-Statistic", f"{t_stat:.3f}")
+            st.metric("P-Value", f"{p_value:.4f}")
+            
+            if p_value < 0.05:
+                st.success("✅ **Significant difference** (p < 0.05)")
+                st.markdown("ML and Rule-based detect **different temperature distributions**")
+            else:
+                st.warning("⚠️ **No significant difference** (p >= 0.05)")
+                st.markdown("ML and Rule-based detect **similar temperature distributions**")
+        
+        with col2:
+            pooled_std = np.sqrt((ml_only_temp.std()**2 + rule_only_temp.std()**2) / 2)
+            cohens_d = (ml_only_temp.mean() - rule_only_temp.mean()) / pooled_std
+            
+            st.metric("Cohen's d", f"{cohens_d:.3f}")
+            
+            if abs(cohens_d) > 0.8:
+                st.info("Large effect size - **practically significant**")
+            elif abs(cohens_d) > 0.5:
+                st.info("Medium effect size")
+            elif abs(cohens_d) > 0.2:
+                st.info("Small effect size")
+            else:
+                st.info("Negligible effect size")
+
+with tab6:
+    st.header("🔍 Case Studies")
+    
+    st.subheader("🤖 ML Only Detections")
+    ml_only_examples = comparison_df[comparison_df['Flag Type'] == 'ML Only'].head(10)
+    if len(ml_only_examples) > 0:
+        st.dataframe(ml_only_examples[['Temperature', 'Hour', 'Month', 'Rolling Mean 6h', 'Rolling Std 6h']])
+        st.markdown("""
+        **What ML Only detections represent:**
+        - Contextual anomalies (unusual for time of day)
+        - Subtle patterns too small for spike detection
+        - Transition periods with rapid changes
+        - Boundary cases near range limits
+        """)
+    
+    st.markdown("---")
+    
+    st.subheader("📏 Rule Only Detections")
+    rule_only_examples = comparison_df[comparison_df['Flag Type'] == 'Rule Only'].head(10)
+    if len(rule_only_examples) > 0:
+        st.dataframe(rule_only_examples[['Temperature', 'Hour', 'Month', 'Rolling Mean 6h', 'Rolling Std 6h']])
+        st.markdown("""
+        **What Rule Only detections represent:**
+        - Flatlining (zero or near-zero rolling std)
+        - Extreme temperature spikes
+        - Range violations (-40°C to 55°C)
+        - Spatial inconsistencies with neighbor
+        """)
+    
+    st.markdown("---")
+    
+    st.subheader("🎯 Both Methods Agree")
+    both_examples = comparison_df[comparison_df['Flag Type'] == 'Both'].head(10)
+    if len(both_examples) > 0:
+        st.dataframe(both_examples[['Temperature', 'Hour', 'Month', 'Rolling Mean 6h', 'Rolling Std 6h']])
+        st.markdown("""
+        **What Both detections represent:**
+        - Clear, obvious anomalies
+        - High confidence quality issues
+        - Validation of ML by rule-based methods
+        """)
+    
+    st.markdown("---")
+    
+    # Method comparison summary
+    st.subheader("📊 Method Comparison Summary")
+    
+    summary_data = {
+        'Aspect': ['Sensitivity', 'Specificity', 'Pattern Detection', 'Spatial Awareness', 'Best For'],
+        ml_method: [
+            f"{recall:.2f}" if 'recall' in locals() else 'N/A',
+            f"{specificity:.2f}" if 'specificity' in locals() else 'N/A',
+            'Contextual anomalies',
+            'No' if df_neighbor is None else 'Yes',
+            'Subtle patterns'
+        ],
+        'Rule-Based': [
+            f"{recall:.2f}" if 'recall' in locals() else 'N/A',
+            f"{specificity:.2f}" if 'specificity' in locals() else 'N/A',
+            'Clear violations',
+            'Yes' if df_neighbor is not None else 'No',
+            'Obvious errors'
+        ]
+    }
+    
+    st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+    
+    # Download full comparison data
+    st.markdown("---")
+    csv = comparison_df.to_csv()
+    st.download_button(
+        label="📥 Download Complete Comparison Data",
+        data=csv,
+        file_name=f"ml_rule_comparison_{ml_method.replace(' ', '_')}.csv",
+        mime="text/csv"
+    )
+
+# ============================================================================
+# Footer
+# ============================================================================
+st.markdown("---")
+st.markdown("""
+**How to use this analysis:**
+1. Select a state and primary station
+2. Choose neighbor station by distance threshold (1-200 km)
+3. Select years of data to analyze
+4. Choose ML method and tune contamination parameter
+5. Review all 6 analysis tabs for comprehensive comparison
+6. Download results for further analysis
+
+The distance-based neighbor selection allows you to control the spatial scale of comparison:
+- **Small distances (1-10 km)**: Urban areas, dense networks
+- **Medium distances (20-50 km)**: Rural areas, moderate density
+- **Large distances (100+ km)**: Remote areas, sparse networks
+""")
