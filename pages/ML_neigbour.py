@@ -342,7 +342,6 @@ if distance_option == "Nearest station (any distance)":
     other_stations = station_df[station_df.index != primary_idx].copy()
     
     min_dist = float('inf')
-    nearest_idx = None
     nearest_info = None
     
     for idx, row in other_stations.iterrows():
@@ -353,7 +352,6 @@ if distance_option == "Nearest station (any distance)":
         
         if dist < min_dist:
             min_dist = dist
-            nearest_idx = idx
             nearest_info = {
                 'name': row['Name'],
                 'filename': row['FILENAME'],
@@ -870,5 +868,3 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview Statistics",
     "🎯 Agreement Analysis",
     "📈 Temporal Patterns",
-    "🌡️ Temperature Analysis",
-    "
