@@ -1,0 +1,1055 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy import stats
+from sklearn.metrics import cohen_kappa_score, confusion_matrix, matthews_corrcoef
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.svm import OneClassSVM
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import requests
+from bs4 import BeautifulSoup
+from geopy.distance import geodesic
+import warnings
+warnings.filterwarnings('ignore')
+
+# Page config
+st.set_page_config(
+    page_title="ML vs Rule-Based Comparison",
+    page_icon="🔄",
+    layout="wide"
+)
+
+st.title("🔄 ML vs Rule-Based: Comprehensive Comparison")
+st.markdown("""
+This page allows you to select specific stations and compare multiple ML-based vs rule-based anomaly detection methods.
+You can load 1-2 stations at a time for detailed analysis with various ML algorithms.
+""")
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+@st.cache_data
+def load_station_metadata(state_code):
+    """Load and filter station metadata."""
+    ISD_METADATA_URL = "https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv"
+    
+    with st.spinner("Loading station metadata..."):
+        stations = pd.read_csv(ISD_METADATA_URL)
+        state_stations = stations[(stations['STATE'] == state_code) &
+                                  (~stations['LAT'].isna()) & 
+                                  (~stations['LON'].isna())]
+    return state_stations
+
+@st.cache_data
+def get_access_files(year):
+    """Get list of Access files for a given year."""
+    ACCESS_BASE_URL = "https://www.ncei.noaa.gov/data/global-hourly/access/{year}/"
+    url = ACCESS_BASE_URL.format(year=year)
+    
+    try:
+        res = requests.get(url)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'html.parser')
+        files = [a.text for a in soup.find_all('a') if a.text.endswith('.csv')]
+        return files, url
+    except:
+        return [], None
+
+def load_access_csv(url: str) -> pd.DataFrame:
+    """Load and process Access CSV file."""
+    try:
+        df = pd.read_csv(url, low_memory=False)
+        df['DATE'] = pd.to_datetime(df['DATE'])
+        df = df.set_index('DATE')
+        df['TMP_val'] = df['TMP'].str.split(',').str[0].astype(float)
+        df['TMP_val'] = df['TMP_val'].replace(9999, np.nan)
+        df['T_air'] = df['TMP_val'] / 10.0  # °C
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+def engineer_features(df):
+    """Create enhanced features for ML models"""
+    df_features = df.copy()
+    
+    # Time features
+    df_features['hour'] = df_features.index.hour
+    df_features['day'] = df_features.index.day
+    df_features['dayofweek'] = df_features.index.dayofweek
+    df_features['month'] = df_features.index.month
+    df_features['dayofyear'] = df_features.index.dayofyear
+    
+    # Cyclical encoding
+    df_features['hour_sin'] = np.sin(2 * np.pi * df_features['hour'] / 24)
+    df_features['hour_cos'] = np.cos(2 * np.pi * df_features['hour'] / 24)
+    df_features['month_sin'] = np.sin(2 * np.pi * df_features['month'] / 12)
+    df_features['month_cos'] = np.cos(2 * np.pi * df_features['month'] / 12)
+    
+    # Lag features
+    for lag in [1, 3, 6, 12, 24]:
+        df_features[f'temp_lag_{lag}h'] = df_features['T_air'].shift(lag)
+    
+    # Rolling statistics
+    for window in [6, 12, 24]:
+        df_features[f'rolling_mean_{window}h'] = df_features['T_air'].rolling(window, min_periods=3).mean()
+        df_features[f'rolling_std_{window}h'] = df_features['T_air'].rolling(window, min_periods=3).std()
+        df_features[f'rolling_min_{window}h'] = df_features['T_air'].rolling(window, min_periods=3).min()
+        df_features[f'rolling_max_{window}h'] = df_features['T_air'].rolling(window, min_periods=3).max()
+    
+    # Rate of change
+    df_features['temp_diff_1h'] = df_features['T_air'].diff(1)
+    df_features['temp_diff_3h'] = df_features['T_air'].diff(3)
+    df_features['temp_diff_6h'] = df_features['T_air'].diff(6)
+    
+    return df_features
+
+def get_ml_flags_isolation_forest(df, contamination=0.05, features=None):
+    """Generate ML flags using Isolation Forest"""
+    if features is None:
+        features = df[['T_air']].copy().dropna()
+    else:
+        features = features.dropna()
+    
+    if len(features) < 50:
+        return None
+    
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+    
+    iso_forest = IsolationForest(
+        contamination=contamination,
+        random_state=42,
+        n_estimators=100,
+        bootstrap=True
+    )
+    preds = iso_forest.fit_predict(features_scaled)
+    scores = iso_forest.score_samples(features_scaled)
+    
+    ml_flags = pd.Series(False, index=df.index)
+    ml_flags.loc[features.index] = (preds == -1)
+    
+    return ml_flags, scores
+
+def get_ml_flags_lof(df, contamination=0.05, n_neighbors=20, features=None):
+    """Generate ML flags using Local Outlier Factor"""
+    if features is None:
+        features = df[['T_air']].copy().dropna()
+    else:
+        features = features.dropna()
+    
+    if len(features) < 50:
+        return None
+    
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+    
+    lof = LocalOutlierFactor(
+        contamination=contamination,
+        n_neighbors=n_neighbors,
+        novelty=False
+    )
+    preds = lof.fit_predict(features_scaled)
+    
+    ml_flags = pd.Series(False, index=df.index)
+    ml_flags.loc[features.index] = (preds == -1)
+    
+    return ml_flags, None
+
+def get_ml_flags_one_class_svm(df, contamination=0.05, features=None):
+    """Generate ML flags using One-Class SVM"""
+    if features is None:
+        features = df[['T_air']].copy().dropna()
+    else:
+        features = features.dropna()
+    
+    if len(features) < 50:
+        return None
+    
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+    
+    svm = OneClassSVM(
+        nu=contamination,
+        kernel='rbf',
+        gamma='auto'
+    )
+    preds = svm.fit_predict(features_scaled)
+    
+    ml_flags = pd.Series(False, index=df.index)
+    ml_flags.loc[features.index] = (preds == -1)
+    
+    return ml_flags, None
+
+def get_ml_flags_ensemble(df, contamination=0.05, features=None):
+    """Ensemble method combining multiple algorithms"""
+    if features is None:
+        features = df[['T_air']].copy().dropna()
+    else:
+        features = features.dropna()
+    
+    if len(features) < 50:
+        return None
+    
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+    
+    # Get predictions from multiple methods
+    iso_forest = IsolationForest(contamination=contamination, random_state=42)
+    lof = LocalOutlierFactor(contamination=contamination, n_neighbors=20, novelty=False)
+    svm = OneClassSVM(nu=contamination, kernel='rbf', gamma='auto')
+    
+    iso_preds = iso_forest.fit_predict(features_scaled)
+    lof_preds = lof.fit_predict(features_scaled)
+    svm_preds = svm.fit_predict(features_scaled)
+    
+    # Voting ensemble (at least 2 out of 3 agree it's anomaly)
+    ensemble_votes = (iso_preds == -1).astype(int) + (lof_preds == -1).astype(int) + (svm_preds == -1).astype(int)
+    ensemble_preds = ensemble_votes >= 2
+    
+    ml_flags = pd.Series(False, index=df.index)
+    ml_flags.loc[features.index] = ensemble_preds
+    
+    return ml_flags, ensemble_votes
+
+def get_ml_flags_hybrid(df, rule_flags, contamination=0.05, features=None):
+    """
+    Hybrid approach: Uses rule flags as training labels for supervised learning
+    """
+    if features is None:
+        features = df[['T_air']].copy().dropna()
+    else:
+        features = features.dropna()
+    
+    # Align rule flags with features
+    aligned_rules = rule_flags.loc[features.index]
+    
+    if len(features) < 100 or aligned_rules.sum() < 10:
+        return None, None
+    
+    # Use rule flags as training labels
+    X = features.values
+    y = aligned_rules.values
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+    
+    # Scale features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    # Train Random Forest
+    rf = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=10,
+        random_state=42,
+        class_weight='balanced'
+    )
+    rf.fit(X_train_scaled, y_train)
+    
+    # Predict on all data
+    X_all_scaled = scaler.transform(features.values)
+    pred_proba = rf.predict_proba(X_all_scaled)[:, 1]  # Probability of being anomaly
+    
+    # Adjust threshold based on contamination
+    threshold = np.percentile(pred_proba, (1 - contamination) * 100)
+    hybrid_preds = pred_proba >= threshold
+    
+    ml_flags = pd.Series(False, index=df.index)
+    ml_flags.loc[features.index] = hybrid_preds
+    
+    return ml_flags, pred_proba
+
+# ============================================================================
+# Sidebar - Station Selection
+# ============================================================================
+st.sidebar.header("🔧 Station Selection")
+
+# State selection
+state_code = st.sidebar.text_input("State Code", value="NM").upper()
+
+# Load available stations for the state
+with st.spinner(f"Loading {state_code} stations..."):
+    state_stations = load_station_metadata(state_code)
+
+if len(state_stations) == 0:
+    st.sidebar.error(f"No stations found for state {state_code}")
+    st.stop()
+
+# Create station selection with checkboxes
+st.sidebar.subheader("Select Stations (max 2)")
+
+station_options = []
+for idx, row in state_stations.iterrows():
+    station_options.append({
+        'USAF': row['USAF'],
+        'WBAN': row['WBAN'],
+        'Name': row['STATION NAME'],
+        'Location': f"{row['LAT']:.2f}, {row['LON']:.2f}"
+    })
+
+station_df = pd.DataFrame(station_options)
+
+selected_indices = st.sidebar.multiselect(
+    "Choose 1-2 stations",
+    options=range(len(station_df)),
+    format_func=lambda x: f"{station_df.iloc[x]['Name']} ({station_df.iloc[x]['USAF']}-{station_df.iloc[x]['WBAN']})",
+    max_selections=2
+)
+
+if len(selected_indices) == 0:
+    st.sidebar.warning("Please select at least one station")
+    st.stop()
+
+# Year range selection
+st.sidebar.subheader("📅 Year Range")
+year_range = st.sidebar.slider("Select Years", 2000, 2025, (2018, 2023))
+years = range(year_range[0], year_range[1] + 1)
+
+# ============================================================================
+# ML Method Selection
+# ============================================================================
+st.sidebar.header("🤖 ML Method Selection")
+
+ml_method = st.sidebar.selectbox(
+    "Choose ML Method",
+    options=[
+        "Isolation Forest (Default)",
+        "Local Outlier Factor (LOF)",
+        "One-Class SVM",
+        "Ensemble (Voting)",
+        "Hybrid (Rule-based + ML)"
+    ],
+    help="Different methods have different strengths"
+)
+
+# ML Parameters
+st.sidebar.subheader("⚙️ Parameter Tuning")
+
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    contamination = st.number_input(
+        "Contamination",
+        min_value=0.01,
+        max_value=0.30,
+        value=0.05,
+        step=0.01,
+        format="%.2f",
+        help="Expected proportion of anomalies"
+    )
+
+with col2:
+    if ml_method == "Local Outlier Factor (LOF)":
+        n_neighbors = st.number_input(
+            "Neighbors",
+            min_value=5,
+            max_value=50,
+            value=20,
+            step=5,
+            help="Number of neighbors for LOF"
+        )
+    else:
+        n_neighbors = 20  # Default
+
+# Feature engineering option
+use_engineered_features = st.sidebar.checkbox(
+    "Use Engineered Features",
+    value=True,
+    help="Add time features, lags, and rolling statistics"
+)
+
+# ============================================================================
+# Parameter Tuning Guide
+# ============================================================================
+with st.sidebar.expander("📘 Parameter Tuning Guide"):
+    st.markdown("""
+    ### When to Adjust Parameters
+    
+    **Decrease Contamination (0.01-0.03):**
+    - Data has clear patterns with few anomalies
+    - ML flags > 15% of data
+    - Many false positives in review
+    - Temperature range is large (>60°C)
+    
+    **Increase Contamination (0.08-0.15):**
+    - Data is noisy with many anomalies
+    - ML flags < 2% but you expect more
+    - Missing known events
+    - Temperature range is small (<30°C)
+    
+    **Default (0.05):**
+    - Starting point for new data
+    - Balanced sensitivity
+    - General purpose use
+    
+    **LOF Neighbors:**
+    - Smaller (10-15): More sensitive to local patterns
+    - Larger (25-50): More global perspective
+    """)
+    
+    st.markdown("### Method Strengths")
+    st.markdown("""
+    - **Isolation Forest**: Fast, good for mixed data types
+    - **LOF**: Excellent for local anomalies
+    - **One-Class SVM**: Good for boundary detection
+    - **Ensemble**: Robust, reduces false positives
+    - **Hybrid**: Learns from rule patterns
+    """)
+
+# ============================================================================
+# Common Scenarios Reference
+# ============================================================================
+with st.sidebar.expander("📋 Common Scenarios"):
+    st.markdown("""
+    | **Scenario** | **Recommended Contamination** |
+    |--------------|-------------------------------|
+    | Desert climate (large swings) | 0.02 - 0.03 |
+    | Coastal (moderate) | 0.05 (default) |
+    | Arctic/Extreme cold | 0.03 - 0.04 |
+    | Urban heat island | 0.04 - 0.06 |
+    | Mountain station | 0.03 - 0.05 |
+    | Known sensor issues | 0.07 - 0.10 |
+    | Clean, well-maintained | 0.01 - 0.02 |
+    """)
+
+# ============================================================================
+# Load Data for Selected Stations
+# ============================================================================
+st.header("📡 Loading Station Data")
+
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+station_data_dict = {}
+
+for i, idx in enumerate(selected_indices):
+    station_info = station_df.iloc[idx]
+    status_text.text(f"Loading data for {station_info['Name']}...")
+    
+    usaf = str(station_info['USAF']).zfill(6)
+    wban = str(station_info['WBAN']).zfill(5)
+    filename = f"{usaf}{wban}.csv"
+    
+    all_data = []
+    
+    for j, year in enumerate(years):
+        progress = (i * len(years) + j) / (len(selected_indices) * len(years))
+        progress_bar.progress(progress)
+        
+        url = f"https://www.ncei.noaa.gov/data/global-hourly/access/{year}/{filename}"
+        df_year = load_access_csv(url)
+        
+        if not df_year.empty:
+            all_data.append(df_year)
+    
+    if all_data:
+        df_station = pd.concat(all_data).sort_index()
+        station_data_dict[station_info['Name']] = {
+            'df': df_station,
+            'usaf': usaf,
+            'wban': wban,
+            'lat': float(station_info['Location'].split(',')[0]),
+            'lon': float(station_info['Location'].split(',')[1])
+        }
+        st.success(f"✅ Loaded {len(df_station):,} records for {station_info['Name']}")
+    else:
+        st.error(f"❌ No data found for {station_info['Name']} in selected years")
+
+progress_bar.progress(1.0)
+status_text.text("Data loading complete!")
+
+st.markdown("---")
+
+# ============================================================================
+# Data Diagnostics
+# ============================================================================
+if len(station_data_dict) >= 1:
+    station_name = list(station_data_dict.keys())[0]
+    df_primary = station_data_dict[station_name]['df']
+    
+    st.sidebar.subheader("📊 Data Diagnostics")
+    
+    total_points = len(df_primary)
+    data_years = df_primary.index.year.nunique()
+    data_range = df_primary['T_air'].max() - df_primary['T_air'].min()
+    data_std = df_primary['T_air'].std()
+    
+    st.sidebar.info(f"""
+    **Data Summary:**
+    - Points: {total_points:,}
+    - Years: {data_years}
+    - Temp Range: {data_range:.1f}°C
+    - Std Dev: {data_std:.2f}°C
+    """)
+    
+    # Recommendations based on data
+    st.sidebar.subheader("💡 Recommendations")
+    
+    if data_range > 60:
+        st.sidebar.info("🌡️ Large range - consider lower contamination (0.02-0.03)")
+    elif data_range < 30:
+        st.sidebar.info("🌡️ Small range - consider higher contamination (0.05-0.08)")
+    
+    if data_std > 10:
+        st.sidebar.info("📊 High variability - start with lower contamination (0.03)")
+    elif data_std < 5:
+        st.sidebar.info("📊 Low variability - start with higher contamination (0.07)")
+
+# ============================================================================
+# Process and Compare Stations
+# ============================================================================
+if len(station_data_dict) == 1:
+    # Single station analysis
+    station_name = list(station_data_dict.keys())[0]
+    df_primary = station_data_dict[station_name]['df']
+    
+    st.header(f"📊 Analyzing: {station_name}")
+    
+    # Apply rule-based QA/QC
+    with st.spinner("Applying rule-based QA/QC..."):
+        df_primary['flag_range'] = (df_primary['T_air'] < -40) | (df_primary['T_air'] > 55)
+        df_primary['dT'] = df_primary['T_air'].diff()
+        df_primary['flag_spike'] = df_primary['dT'].abs() > 8
+        df_primary['flag_flat'] = df_primary['T_air'].rolling(12, min_periods=10).std() < 0.1
+        df_primary['heatwave'] = df_primary['T_air'] > 40
+        
+        # Simplified spatial check (using rolling stats as proxy)
+        df_primary['flag_spatial'] = False
+        
+        df_primary['final_flag'] = (
+            df_primary['flag_range'] |
+            df_primary['flag_spike'] |
+            df_primary['flag_flat'] 
+        )
+        
+        rule_based_flags = df_primary['final_flag'].copy()
+    
+    # Prepare features
+    if use_engineered_features:
+        df_features = engineer_features(df_primary)
+        feature_cols = [col for col in df_features.columns if col not in ['T_air']]
+        features = df_features[feature_cols].dropna()
+    else:
+        features = df_primary[['T_air']].copy().dropna()
+    
+    # Generate ML flags based on selected method
+    with st.spinner(f"Generating {ml_method} flags..."):
+        if ml_method == "Isolation Forest (Default)":
+            ml_flags, ml_scores = get_ml_flags_isolation_forest(df_primary, contamination, features)
+        elif ml_method == "Local Outlier Factor (LOF)":
+            ml_flags, _ = get_ml_flags_lof(df_primary, contamination, n_neighbors, features)
+        elif ml_method == "One-Class SVM":
+            ml_flags, _ = get_ml_flags_one_class_svm(df_primary, contamination, features)
+        elif ml_method == "Ensemble (Voting)":
+            ml_flags, _ = get_ml_flags_ensemble(df_primary, contamination, features)
+        elif ml_method == "Hybrid (Rule-based + ML)":
+            ml_flags, ml_scores = get_ml_flags_hybrid(df_primary, rule_based_flags, contamination, features)
+    
+    if ml_flags is None:
+        st.error("Insufficient data for ML analysis")
+        st.stop()
+    
+    # Parameter impact analysis
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Current Contamination", f"{contamination:.2f}")
+    
+    with col2:
+        flag_rate = ml_flags.sum() / len(ml_flags) * 100
+        st.metric("Actual ML Flag Rate", f"{flag_rate:.2f}%",
+                 delta=f"{flag_rate - contamination*100:.1f}% vs target")
+    
+    with col3:
+        if abs(flag_rate - contamination*100) > 5:
+            st.warning("⚠️ Large difference from target")
+            if flag_rate > contamination*100:
+                st.info("💡 Consider decreasing contamination")
+            else:
+                st.info("💡 Consider increasing contamination")
+    
+    # Sensitivity Analysis
+    if st.sidebar.checkbox("Show Parameter Sensitivity Analysis"):
+        st.subheader("📈 Parameter Sensitivity Analysis")
+        
+        test_contaminations = [0.01, 0.03, 0.05, 0.07, 0.10, 0.15]
+        test_rates = []
+        
+        with st.spinner("Testing different contamination values..."):
+            for test_contam in test_contaminations:
+                if ml_method == "Isolation Forest (Default)":
+                    test_flags, _ = get_ml_flags_isolation_forest(df_primary, test_contam, features)
+                elif ml_method == "Local Outlier Factor (LOF)":
+                    test_flags, _ = get_ml_flags_lof(df_primary, test_contam, n_neighbors, features)
+                elif ml_method == "One-Class SVM":
+                    test_flags, _ = get_ml_flags_one_class_svm(df_primary, test_contam, features)
+                elif ml_method == "Ensemble (Voting)":
+                    test_flags, _ = get_ml_flags_ensemble(df_primary, test_contam, features)
+                elif ml_method == "Hybrid (Rule-based + ML)":
+                    test_flags, _ = get_ml_flags_hybrid(df_primary, rule_based_flags, test_contam, features)
+                
+                if test_flags is not None:
+                    test_rates.append(test_flags.sum() / len(test_flags) * 100)
+                else:
+                    test_rates.append(0)
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=test_contaminations,
+            y=test_rates,
+            mode='lines+markers',
+            name='Actual Flag Rate',
+            line=dict(color='blue', width=2),
+            marker=dict(size=8)
+        ))
+        fig.add_trace(go.Scatter(
+            x=[0, 0.16],
+            y=[0, 16],
+            mode='lines',
+            name='Ideal 1:1 Line',
+            line=dict(color='red', dash='dash')
+        ))
+        
+        fig.update_layout(
+            title=f"Parameter Sensitivity - {ml_method}",
+            xaxis_title="Contamination Parameter",
+            yaxis_title="Actual Flag Rate (%)",
+            height=400,
+            hovermode='x'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.info("""
+        **How to read this chart:**
+        - Points **above** the red line: Model flags MORE than expected
+        - Points **below** the red line: Model flags LESS than expected
+        - Closer to the line: Better calibration
+        """)
+    
+    # Create comparison dataframe
+    comparison_df = pd.DataFrame(index=df_primary.index)
+    comparison_df['Temperature'] = df_primary['T_air']
+    comparison_df['Rule Flag'] = rule_based_flags.astype(int)
+    comparison_df['ML Flag'] = ml_flags.astype(int)
+    comparison_df['Flag Type'] = 'Neither'
+    comparison_df.loc[(comparison_df['Rule Flag'] == 1) & (comparison_df['ML Flag'] == 1), 'Flag Type'] = 'Both'
+    comparison_df.loc[(comparison_df['Rule Flag'] == 1) & (comparison_df['ML Flag'] == 0), 'Flag Type'] = 'Rule Only'
+    comparison_df.loc[(comparison_df['Rule Flag'] == 0) & (comparison_df['ML Flag'] == 1), 'Flag Type'] = 'ML Only'
+    
+    # Add temporal features
+    comparison_df['Hour'] = comparison_df.index.hour
+    comparison_df['Month'] = comparison_df.index.month
+    comparison_df['DayOfWeek'] = comparison_df.index.dayofweek
+    comparison_df['Season'] = comparison_df['Month'].map({12:'Winter',1:'Winter',2:'Winter',
+                                                          3:'Spring',4:'Spring',5:'Spring',
+                                                          6:'Summer',7:'Summer',8:'Summer',
+                                                          9:'Fall',10:'Fall',11:'Fall'})
+    
+    # Add rolling statistics
+    for window in [6, 12, 24]:
+        comparison_df[f'Rolling Mean {window}h'] = df_primary['T_air'].rolling(window, min_periods=3).mean()
+        comparison_df[f'Rolling Std {window}h'] = df_primary['T_air'].rolling(window, min_periods=3).std()
+
+# ============================================================================
+# Create tabs for analysis
+# ============================================================================
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📊 Overview Statistics",
+    "🎯 Agreement Analysis",
+    "📈 Temporal Patterns",
+    "🌡️ Temperature Analysis",
+    "📉 Statistical Comparison",
+    "🔍 Case Studies"
+])
+
+# ============================================================================
+# TAB 1: Overview Statistics
+# ============================================================================
+with tab1:
+    st.header("📊 Overview Statistics")
+    
+    total_points = len(comparison_df)
+    rule_count = (comparison_df['Rule Flag'] == 1).sum()
+    ml_count = (comparison_df['ML Flag'] == 1).sum()
+    both_count = ((comparison_df['Rule Flag'] == 1) & (comparison_df['ML Flag'] == 1)).sum()
+    rule_only = ((comparison_df['Rule Flag'] == 1) & (comparison_df['ML Flag'] == 0)).sum()
+    ml_only = ((comparison_df['Rule Flag'] == 0) & (comparison_df['ML Flag'] == 1)).sum()
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("Total Points", f"{total_points:,}")
+    with col2:
+        st.metric("Rule Flags", f"{rule_count:,}", 
+                 delta=f"{(rule_count/total_points*100):.1f}%")
+    with col3:
+        st.metric("ML Flags", f"{ml_count:,}", 
+                 delta=f"{(ml_count/total_points*100):.1f}%",
+                 delta_color="inverse")
+    with col4:
+        st.metric("Both", f"{both_count:,}")
+    with col5:
+        agreement = (both_count + (total_points - rule_count - ml_count + both_count)) / total_points * 100
+        st.metric("Agreement Rate", f"{agreement:.1f}%")
+    
+    st.markdown("---")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        flag_counts = comparison_df['Flag Type'].value_counts()
+        fig = go.Figure(data=[go.Pie(
+            labels=flag_counts.index,
+            values=flag_counts.values,
+            hole=0.4,
+            marker_colors=['#2E86AB', '#A23B72', '#F18F01', '#C73E1D'],
+            textinfo='label+percent',
+            textposition='outside'
+        )])
+        fig.update_layout(title="Distribution of Flag Types", height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        summary_stats = []
+        for flag_type in ['ML Only', 'Rule Only', 'Both', 'Neither']:
+            subset = comparison_df[comparison_df['Flag Type'] == flag_type]
+            if len(subset) > 0:
+                summary_stats.append({
+                    'Flag Type': flag_type,
+                    'Count': len(subset),
+                    'Percentage': f"{len(subset)/total_points*100:.2f}%",
+                    'Mean Temp': f"{subset['Temperature'].mean():.2f}°C",
+                    'Std Dev': f"{subset['Temperature'].std():.2f}°C"
+                })
+        st.dataframe(pd.DataFrame(summary_stats), use_container_width=True, hide_index=True)
+    
+    st.markdown("---")
+    
+    st.subheader("🔍 Key Insights")
+    insights = []
+    
+    if ml_count > rule_count:
+        ratio = ml_count / rule_count
+        insights.append(f"✅ **ML is {ratio:.1f}x more sensitive** than rule-based")
+    else:
+        ratio = rule_count / ml_count
+        insights.append(f"⚠️ **Rule-based is {ratio:.1f}x more sensitive** than ML")
+    
+    overlap_ratio = both_count / min(rule_count, ml_count) * 100 if min(rule_count, ml_count) > 0 else 0
+    if overlap_ratio > 80:
+        insights.append(f"🎯 **High agreement** ({overlap_ratio:.1f}% overlap)")
+    elif overlap_ratio > 50:
+        insights.append(f"🟡 **Moderate agreement** ({overlap_ratio:.1f}% overlap)")
+    else:
+        insights.append(f"🔴 **Low agreement** ({overlap_ratio:.1f}% overlap)")
+    
+    if ml_only > rule_only:
+        insights.append(f"🤖 **ML specializes** in finding {ml_only} unique patterns")
+    else:
+        insights.append(f"📏 **Rules specialize** in finding {rule_only} unique patterns")
+    
+    for insight in insights:
+        st.info(insight)
+
+# ============================================================================
+# TAB 2: Agreement Analysis
+# ============================================================================
+with tab2:
+    st.header("🎯 Agreement Analysis")
+    
+    y_true = comparison_df['Rule Flag'].values
+    y_pred = comparison_df['ML Flag'].values
+    
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    
+    accuracy = (tp + tn) / (tp + tn + fp + fn)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    kappa = cohen_kappa_score(y_true, y_pred)
+    mcc = matthews_corrcoef(y_true, y_pred)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Accuracy", f"{accuracy:.3f}")
+        st.metric("Precision", f"{precision:.3f}")
+    with col2:
+        st.metric("Recall", f"{recall:.3f}")
+        st.metric("Specificity", f"{specificity:.3f}")
+    with col3:
+        st.metric("F1 Score", f"{f1:.3f}")
+        st.metric("Cohen's Kappa", f"{kappa:.3f}")
+    with col4:
+        st.metric("MCC", f"{mcc:.3f}")
+        st.metric("Youden's J", f"{recall + specificity - 1:.3f}")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        fig = go.Figure(data=go.Heatmap(
+            z=cm,
+            x=['ML: Normal', 'ML: Flagged'],
+            y=['Rule: Normal', 'Rule: Flagged'],
+            colorscale='Blues',
+            text=cm,
+            texttemplate='%{text}',
+            textfont={"size": 16},
+            showscale=False
+        ))
+        fig.update_layout(title="Confusion Matrix", height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("📖 Interpretation")
+        interpretations = [
+            f"**True Negatives:** {tn:,} points - Both agree normal",
+            f"**True Positives:** {tp:,} points - Both agree anomalous",
+            f"**False Positives:** {fp:,} points - ML flagged only",
+            f"**False Negatives:** {fn:,} points - Rules flagged only"
+        ]
+        for interp in interpretations:
+            st.markdown(interp)
+        
+        if kappa > 0.8:
+            st.success(f"**Almost perfect agreement** (Kappa = {kappa:.3f})")
+        elif kappa > 0.6:
+            st.success(f"**Substantial agreement** (Kappa = {kappa:.3f})")
+        elif kappa > 0.4:
+            st.warning(f"**Moderate agreement** (Kappa = {kappa:.3f})")
+        else:
+            st.error(f"**Slight agreement** (Kappa = {kappa:.3f})")
+
+# ============================================================================
+# TAB 3: Temporal Patterns
+# ============================================================================
+with tab3:
+    st.header("📈 Temporal Pattern Analysis")
+    
+    hourly_stats = comparison_df.groupby('Hour').agg({
+        'Rule Flag': 'mean',
+        'ML Flag': 'mean',
+        'Temperature': 'mean'
+    }).reset_index()
+    
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    fig.add_trace(
+        go.Bar(x=hourly_stats['Hour'], y=hourly_stats['Rule Flag'] * 100,
+               name='Rule Flag Rate', marker_color='red', opacity=0.7),
+        secondary_y=False
+    )
+    
+    fig.add_trace(
+        go.Bar(x=hourly_stats['Hour'], y=hourly_stats['ML Flag'] * 100,
+               name='ML Flag Rate', marker_color='orange', opacity=0.7),
+        secondary_y=False
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=hourly_stats['Hour'], y=hourly_stats['Temperature'],
+                  name='Avg Temperature', line=dict(color='blue', width=2),
+                  mode='lines+markers'),
+        secondary_y=True
+    )
+    
+    fig.update_layout(title="Flag Rates by Hour of Day", height=400)
+    fig.update_yaxes(title_text="Flag Rate (%)", secondary_y=False)
+    fig.update_yaxes(title_text="Average Temperature (°C)", secondary_y=True)
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Peak disagreement hour
+    hourly_diff = hourly_stats.copy()
+    hourly_diff['Diff'] = abs(hourly_stats['ML Flag'] - hourly_stats['Rule Flag']) * 100
+    max_diff_hour = hourly_diff.loc[hourly_diff['Diff'].idxmax()]
+    
+    st.info(f"""
+    **Peak Disagreement Hour**: {int(max_diff_hour['Hour']):02d}:00
+    - Rule Rate: {max_diff_hour['Rule Flag']*100:.1f}%
+    - ML Rate: {max_diff_hour['ML Flag']*100:.1f}%
+    - Difference: {max_diff_hour['Diff']:.1f}%
+    """)
+
+# ============================================================================
+# TAB 4: Temperature Analysis
+# ============================================================================
+with tab4:
+    st.header("🌡️ Temperature Analysis")
+    
+    fig = go.Figure()
+    
+    for flag_type, color in zip(['ML Only', 'Rule Only', 'Both', 'Neither'],
+                                 ['orange', 'red', 'purple', 'gray']):
+        subset = comparison_df[comparison_df['Flag Type'] == flag_type]['Temperature'].dropna()
+        if len(subset) > 0:
+            fig.add_trace(go.Violin(
+                y=subset,
+                name=flag_type,
+                box_visible=True,
+                meanline_visible=True,
+                fillcolor=color,
+                opacity=0.7,
+                line_color='black'
+            ))
+    
+    fig.update_layout(title="Temperature Distribution by Flag Type", height=500)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Temperature bins
+    bins = np.arange(-30, 41, 5)
+    labels = [f"{bins[i]}-{bins[i+1]}°C" for i in range(len(bins)-1)]
+    
+    comparison_df['TempBin'] = pd.cut(comparison_df['Temperature'], bins=bins, labels=labels)
+    
+    bin_stats = comparison_df.groupby('TempBin').agg({
+        'Rule Flag': 'sum',
+        'ML Flag': 'sum',
+        'Temperature': 'count'
+    }).rename(columns={'Temperature': 'Total'})
+    
+    bin_stats['Rule Rate'] = (bin_stats['Rule Flag'] / bin_stats['Total'] * 100).round(1)
+    bin_stats['ML Rate'] = (bin_stats['ML Flag'] / bin_stats['Total'] * 100).round(1)
+    
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(
+        x=bin_stats.index, y=bin_stats['Rule Rate'],
+        name='Rule Rate', marker_color='red', opacity=0.7
+    ))
+    fig2.add_trace(go.Bar(
+        x=bin_stats.index, y=bin_stats['ML Rate'],
+        name='ML Rate', marker_color='orange', opacity=0.7
+    ))
+    
+    fig2.update_layout(title="Flag Rates by Temperature Range", height=400)
+    st.plotly_chart(fig2, use_container_width=True)
+
+# ============================================================================
+# TAB 5: Statistical Comparison
+# ============================================================================
+with tab5:
+    st.header("📉 Statistical Comparison")
+    
+    ml_only_temp = comparison_df[comparison_df['Flag Type'] == 'ML Only']['Temperature'].dropna()
+    rule_only_temp = comparison_df[comparison_df['Flag Type'] == 'Rule Only']['Temperature'].dropna()
+    
+    if len(ml_only_temp) > 0 and len(rule_only_temp) > 0:
+        t_stat, p_value = stats.ttest_ind(ml_only_temp, rule_only_temp)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("T-Statistic", f"{t_stat:.3f}")
+            st.metric("P-Value", f"{p_value:.4f}")
+            
+            if p_value < 0.05:
+                st.success("✅ **Significant difference** (p < 0.05)")
+                st.markdown("ML and Rule-based detect **different temperature distributions**")
+            else:
+                st.warning("⚠️ **No significant difference** (p >= 0.05)")
+                st.markdown("ML and Rule-based detect **similar temperature distributions**")
+        
+        with col2:
+            pooled_std = np.sqrt((ml_only_temp.std()**2 + rule_only_temp.std()**2) / 2)
+            cohens_d = (ml_only_temp.mean() - rule_only_temp.mean()) / pooled_std
+            
+            st.metric("Cohen's d", f"{cohens_d:.3f}")
+            
+            if abs(cohens_d) > 0.8:
+                st.info("Large effect size - **practically significant**")
+            elif abs(cohens_d) > 0.5:
+                st.info("Medium effect size")
+            elif abs(cohens_d) > 0.2:
+                st.info("Small effect size")
+            else:
+                st.info("Negligible effect size")
+
+# ============================================================================
+# TAB 6: Case Studies
+# ============================================================================
+with tab6:
+    st.header("🔍 Case Studies")
+    
+    st.subheader("🤖 ML Only Detections")
+    ml_only_examples = comparison_df[comparison_df['Flag Type'] == 'ML Only'].head(10)
+    if len(ml_only_examples) > 0:
+        st.dataframe(ml_only_examples[['Temperature', 'Hour', 'Month', 'Rolling Mean 6h', 'Rolling Std 6h']])
+        st.markdown("""
+        **What ML Only detections represent:**
+        - Contextual anomalies (unusual for time of day)
+        - Subtle patterns too small for spike detection
+        - Transition periods with rapid changes
+        - Boundary cases near range limits
+        """)
+    
+    st.markdown("---")
+    
+    st.subheader("📏 Rule Only Detections")
+    rule_only_examples = comparison_df[comparison_df['Flag Type'] == 'Rule Only'].head(10)
+    if len(rule_only_examples) > 0:
+        st.dataframe(rule_only_examples[['Temperature', 'Hour', 'Month', 'Rolling Mean 6h', 'Rolling Std 6h']])
+        st.markdown("""
+        **What Rule Only detections represent:**
+        - Flatlining (zero rolling std)
+        - Extreme temperature spikes
+        - Range violations
+        - Spatial inconsistencies
+        """)
+    
+    st.markdown("---")
+    
+    # Method comparison summary
+    st.subheader("📊 Method Comparison Summary")
+    
+    summary_data = {
+        'Aspect': ['Sensitivity', 'Specificity', 'Pattern Detection', 'Speed', 'Best For'],
+        ml_method: [
+            f"{recall:.2f}",
+            f"{specificity:.2f}",
+            'Contextual anomalies',
+            'Medium',
+            'Subtle patterns'
+        ],
+        'Rule-Based': [
+            f"{recall:.2f}" if 'recall' in locals() else 'N/A',
+            f"{specificity:.2f}" if 'specificity' in locals() else 'N/A',
+            'Clear violations',
+            'Fast',
+            'Obvious errors'
+        ]
+    }
+    
+    st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+    
+    # Download full comparison data
+    st.markdown("---")
+    csv = comparison_df.to_csv()
+    st.download_button(
+        label="📥 Download Complete Comparison Data",
+        data=csv,
+        file_name=f"ml_rule_comparison_{ml_method.replace(' ', '_')}.csv",
+        mime="text/csv"
+    )
+
+# ============================================================================
+# Footer
+# ============================================================================
+st.markdown("---")
+st.markdown("""
+**How to use this analysis:**
+1. Select a state and 1-2 stations
+2. Choose ML method and tune parameters
+3. Review the 6 analysis tabs
+4. Use insights to improve your QA/QC workflow
+
+The parameter sensitivity analysis helps you find the optimal contamination rate for your specific station and method.
+""")
