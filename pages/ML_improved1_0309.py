@@ -1310,73 +1310,335 @@ if ml_enabled:
         st.warning("No labels available for supervised ML training.")
         df_primary["ml_flag"] = np.nan
         ml_trained = False
+
     else:
         train_df[training_label_col] = train_df[training_label_col].astype(int)
+        train_df = train_df.sort_index()
+        train_df["year"] = train_df.index.year
 
         if train_df[training_label_col].nunique() < 2:
             st.warning("Training labels contain only one class. ML training skipped.")
             df_primary["ml_flag"] = np.nan
             ml_trained = False
+
         else:
-            test_size = st.slider("Test fraction", 0.20, 0.50, 0.30, 0.05)
+            st.subheader("Train/Test Split by Whole Years")
 
-            X = train_df.drop(columns=[training_label_col])
-            y = train_df[training_label_col]
-
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y,
-                test_size=test_size,
-                random_state=42,
-                stratify=y
+            split_method = st.radio(
+                "Choose year-based split method",
+                options=[
+                    "Train on earliest years, test on latest years",
+                    "80/20 split by selected years"
+                ],
+                index=0
             )
 
-            pipe = Pipeline([
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-                ("clf", RandomForestClassifier(
-                    n_estimators=400,
-                    max_depth=14,
-                    min_samples_leaf=3,
-                    class_weight="balanced",
-                    random_state=42,
-                    n_jobs=-1
-                ))
-            ])
+            unique_years = sorted(train_df["year"].dropna().unique().tolist())
 
-            with st.spinner("Training Random Forest model..."):
-                pipe.fit(X_train, y_train)
-                y_pred = pipe.predict(X_test)
+            if len(unique_years) < 2:
+                st.warning("Need at least 2 years with labels for year-based train/test split.")
+                df_primary["ml_flag"] = np.nan
+                ml_trained = False
 
-            full_pred = pipe.predict(ml_features)
-            df_primary["ml_flag"] = full_pred.astype(int)
-            ml_trained = True
+            else:
+                if split_method == "Train on earliest years, test on latest years":
+                    n_test_years = st.slider(
+                        "Number of latest years to use for testing",
+                        min_value=1,
+                        max_value=max(1, len(unique_years) - 1),
+                        value=max(1, int(round(len(unique_years) * 0.2))),
+                        step=1
+                    )
 
-            st.subheader("ML Evaluation on Training Target Labels")
-            cm = confusion_matrix(y_test, y_pred)
-            kappa = cohen_kappa_score(y_test, y_pred)
-            mcc = matthews_corrcoef(y_test, y_pred)
+                    test_years = unique_years[-n_test_years:]
+                    train_years = unique_years[:-n_test_years]
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Cohen's Kappa", f"{kappa:.3f}")
-            c2.metric("MCC", f"{mcc:.3f}")
-            c3.metric("Test Samples", len(y_test))
+                else:
+                    # 80/20 split by selected years
+                    n_test_years = max(1, int(np.ceil(len(unique_years) * 0.2)))
+                    test_years = unique_years[-n_test_years:]
+                    train_years = unique_years[:-n_test_years]
 
-            st.text(classification_report(y_test, y_pred, zero_division=0))
+                st.info(
+                    "ML evaluation uses a whole-year split. "
+                    "This is more realistic than random hourly splitting because it reduces temporal leakage."
+                )
 
-            fig_cm = go.Figure(data=go.Heatmap(
-                z=cm,
-                x=["Pred Good", "Pred Bad"],
-                y=["True Good", "True Bad"],
-                text=cm,
-                texttemplate="%{text}",
-                colorscale="Blues",
-                showscale=False
-            ))
-            fig_cm.update_layout(title="Supervised ML Confusion Matrix", height=350)
-            st.plotly_chart(fig_cm, use_container_width=True)
+                st.write(f"**Training years:** {train_years}")
+                st.write(f"**Testing years:** {test_years}")
+
+                if len(train_years) == 0 or len(test_years) == 0:
+                    st.warning("Invalid year split. Adjust selected years.")
+                    df_primary["ml_flag"] = np.nan
+                    ml_trained = False
+                else:
+                    train_mask = train_df["year"].isin(train_years)
+                    test_mask = train_df["year"].isin(test_years)
+
+                    X = train_df.drop(columns=[training_label_col, "year"]).copy()
+                    y = train_df[training_label_col].copy()
+
+                    X_train = X.loc[train_mask].copy()
+                    X_test = X.loc[test_mask].copy()
+                    y_train = y.loc[train_mask].copy()
+                    y_test = y.loc[test_mask].copy()
+
+                    # Safety check: both train and test need both classes
+                    if len(X_train) == 0 or len(X_test) == 0:
+                        st.warning("Empty train or test split after year filtering.")
+                        df_primary["ml_flag"] = np.nan
+                        ml_trained = False
+
+                    elif y_train.nunique() < 2 or y_test.nunique() < 2:
+                        st.warning(
+                            "Year-based split produced only one class in the training or testing years. "
+                            "Try increasing the year range or generating more balanced labels."
+                        )
+                        df_primary["ml_flag"] = np.nan
+                        ml_trained = False
+
+                    else:
+                        # Show class balance
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.write("Training label distribution:")
+                            st.write(y_train.value_counts(dropna=False).sort_index())
+                        with c2:
+                            st.write("Testing label distribution:")
+                            st.write(y_test.value_counts(dropna=False).sort_index())
+
+                        pipe = Pipeline([
+                            ("imputer", SimpleImputer(strategy="median")),
+                            ("scaler", StandardScaler()),
+                            ("clf", RandomForestClassifier(
+                                n_estimators=400,
+                                max_depth=14,
+                                min_samples_leaf=3,
+                                class_weight="balanced",
+                                random_state=42,
+                                n_jobs=-1
+                            ))
+                        ])
+
+                        with st.spinner("Training Random Forest model..."):
+                            pipe.fit(X_train, y_train)
+                            y_pred = pipe.predict(X_test)
+                            y_pred_proba = pipe.predict_proba(X_test)[:, 1]
+
+                        # Predict on the full feature set
+                        full_feature_df = ml_features.copy()
+                        full_pred = pipe.predict(full_feature_df)
+                        df_primary["ml_flag"] = full_pred.astype(int)
+                        ml_trained = True
+
+                        # -----------------------------------------------------------------
+                        # EVALUATION
+                        # -----------------------------------------------------------------
+                        st.subheader("ML Evaluation on Year-Based Holdout")
+
+                        cm = confusion_matrix(y_test, y_pred)
+                        kappa = cohen_kappa_score(y_test, y_pred)
+                        mcc = matthews_corrcoef(y_test, y_pred)
+
+                        precision, recall, f1, _ = precision_recall_fscore_support(
+                            y_test, y_pred, average="binary", zero_division=0
+                        )
+
+                        holdout_start = X_test.index.min()
+                        holdout_end = X_test.index.max()
+
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Precision", f"{precision:.3f}")
+                        c2.metric("Recall", f"{recall:.3f}")
+                        c3.metric("F1", f"{f1:.3f}")
+                        c4.metric("MCC", f"{mcc:.3f}")
+
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Cohen's Kappa", f"{kappa:.3f}")
+                        c2.metric("Holdout Samples", f"{len(y_test):,}")
+                        c3.metric("Holdout Bad Rate", f"{(y_test.mean() * 100):.2f}%")
+
+                        st.write(f"**Holdout period:** {holdout_start} to {holdout_end}")
+                        st.text(classification_report(y_test, y_pred, zero_division=0))
+
+                        fig_cm = go.Figure(data=go.Heatmap(
+                            z=cm,
+                            x=["Pred Good", "Pred Bad"],
+                            y=["True Good", "True Bad"],
+                            text=cm,
+                            texttemplate="%{text}",
+                            colorscale="Blues",
+                            showscale=False
+                        ))
+                        fig_cm.update_layout(
+                            title="Supervised ML Confusion Matrix (Year-Based Holdout)",
+                            height=350
+                        )
+                        st.plotly_chart(fig_cm, use_container_width=True)
+
+                        # -----------------------------------------------------------------
+                        # HOLDOUT PROBABILITY PLOT
+                        # -----------------------------------------------------------------
+                        eval_plot_df = pd.DataFrame({
+                            "time": X_test.index,
+                            "true_label": y_test.values,
+                            "pred_label": y_pred,
+                            "pred_prob_bad": y_pred_proba
+                        }).set_index("time")
+
+                        fig_prob = go.Figure()
+                        fig_prob.add_trace(go.Scatter(
+                            x=eval_plot_df.index,
+                            y=eval_plot_df["pred_prob_bad"],
+                            mode="lines",
+                            name="Predicted probability of bad"
+                        ))
+                        fig_prob.add_trace(go.Scatter(
+                            x=eval_plot_df.index[eval_plot_df["true_label"] == 1],
+                            y=eval_plot_df.loc[eval_plot_df["true_label"] == 1, "pred_prob_bad"],
+                            mode="markers",
+                            name="True bad in holdout"
+                        ))
+                        fig_prob.update_layout(
+                            title="Holdout Years: Predicted Probability of Bad Observations",
+                            yaxis_title="Probability",
+                            height=350
+                        )
+                        st.plotly_chart(fig_prob, use_container_width=True)
+
+                        # -----------------------------------------------------------------
+                        # YEARLY COMPARISON PLOTS
+                        # -----------------------------------------------------------------
+                        st.subheader("Yearly Comparison of Original vs ML Flags")
+
+                        plot_mode = st.radio(
+                            "Plot comparison for",
+                            options=[
+                                "Entire selected year range",
+                                "Test years only"
+                            ],
+                            index=0
+                        )
+
+                        plot_df = df_primary.copy()
+                        plot_df["original_label"] = df_primary[training_label_col]
+
+                        if plot_mode == "Test years only":
+                            plot_df = plot_df[plot_df.index.year.isin(test_years)].copy()
+
+                        yearly_summary = pd.DataFrame(index=sorted(plot_df.index.year.unique()))
+                        yearly_summary["n_obs"] = plot_df.groupby(plot_df.index.year).size()
+                        yearly_summary["original_flag_rate_pct"] = (
+                            plot_df.groupby(plot_df.index.year)["original_label"].mean() * 100
+                        )
+                        yearly_summary["ml_flag_rate_pct"] = (
+                            plot_df.groupby(plot_df.index.year)["ml_flag"].mean() * 100
+                        )
+
+                        yearly_summary = yearly_summary.reset_index().rename(columns={"index": "year"})
+
+                        fig_year = go.Figure()
+                        fig_year.add_trace(go.Bar(
+                            x=yearly_summary["year"],
+                            y=yearly_summary["original_flag_rate_pct"],
+                            name="Original label bad rate (%)"
+                        ))
+                        fig_year.add_trace(go.Bar(
+                            x=yearly_summary["year"],
+                            y=yearly_summary["ml_flag_rate_pct"],
+                            name="ML bad rate (%)"
+                        ))
+                        fig_year.update_layout(
+                            title=f"Yearly Bad-Rate Comparison ({plot_mode})",
+                            xaxis_title="Year",
+                            yaxis_title="Bad rate (%)",
+                            barmode="group",
+                            height=400
+                        )
+                        st.plotly_chart(fig_year, use_container_width=True)
+
+                        # -----------------------------------------------------------------
+                        # FULL TIME SERIES / TEST-YEAR COMPARISON
+                        # -----------------------------------------------------------------
+                        st.subheader("Time-Series Comparison of Original vs ML Flags")
+
+                        ts_plot_df = df_primary.copy()
+                        ts_plot_df["original_label"] = df_primary[training_label_col]
+
+                        if plot_mode == "Test years only":
+                            ts_plot_df = ts_plot_df[ts_plot_df.index.year.isin(test_years)].copy()
+
+                        # keep a manageable number of points for plotting
+                        ts_plot_df = ts_plot_df.copy()
+                        ts_plot_df["year"] = ts_plot_df.index.year
+
+                        fig_ts = go.Figure()
+                        fig_ts.add_trace(go.Scatter(
+                            x=ts_plot_df.index,
+                            y=ts_plot_df["T_air"],
+                            mode="lines",
+                            name="Temperature"
+                        ))
+
+                        orig_bad_mask = pd.to_numeric(ts_plot_df["original_label"], errors="coerce").fillna(0).astype(int) == 1
+                        ml_bad_mask = pd.to_numeric(ts_plot_df["ml_flag"], errors="coerce").fillna(0).astype(int) == 1
+
+                        fig_ts.add_trace(go.Scatter(
+                            x=ts_plot_df.index[orig_bad_mask],
+                            y=ts_plot_df.loc[orig_bad_mask, "T_air"],
+                            mode="markers",
+                            name="Original bad labels",
+                            marker=dict(size=6, symbol="x")
+                        ))
+
+                        fig_ts.add_trace(go.Scatter(
+                            x=ts_plot_df.index[ml_bad_mask],
+                            y=ts_plot_df.loc[ml_bad_mask, "T_air"],
+                            mode="markers",
+                            name="ML bad labels",
+                            marker=dict(size=5, symbol="circle-open")
+                        ))
+
+                        fig_ts.update_layout(
+                            title=f"Temperature and Flag Comparison ({plot_mode})",
+                            xaxis_title="Time",
+                            yaxis_title="Temperature (°C)",
+                            height=500
+                        )
+                        st.plotly_chart(fig_ts, use_container_width=True)
+
+                        # -----------------------------------------------------------------
+                        # FEATURE IMPORTANCE
+                        # -----------------------------------------------------------------
+                        clf = pipe.named_steps["clf"]
+                        feature_names = X_train.columns.tolist()
+                        importances = pd.DataFrame({
+                            "feature": feature_names,
+                            "importance": clf.feature_importances_
+                        }).sort_values("importance", ascending=False).head(20)
+
+                        st.subheader("Top ML Features")
+                        st.dataframe(importances, use_container_width=True, hide_index=True)
+
+                        fig_imp = go.Figure()
+                        fig_imp.add_trace(go.Bar(
+                            x=importances["importance"][::-1],
+                            y=importances["feature"][::-1],
+                            orientation="h",
+                            name="Importance"
+                        ))
+                        fig_imp.update_layout(
+                            title="Top 20 Feature Importances",
+                            height=500,
+                            yaxis_title=""
+                        )
+                        st.plotly_chart(fig_imp, use_container_width=True)
+
 else:
     df_primary["ml_flag"] = np.nan
     ml_trained = False
+    
+
 
 # =============================================================================
 # COMPARISON TABLE
