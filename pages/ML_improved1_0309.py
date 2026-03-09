@@ -572,7 +572,8 @@ def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, di
         out["implausible_jump_no_neighbor_support"] = False
 
     return out
-
+if len(neighbor_dict) < 2:
+    st.warning("Limited spatial neighbors available — QC relies more heavily on climatology and rule-based diagnostics.")
 
 # =============================================================================
 # METADATA EVENTS
