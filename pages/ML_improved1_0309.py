@@ -397,7 +397,7 @@ def build_dynamic_rule_features(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # SPATIAL QC
 # =============================================================================
-def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, dict]], min_neighbors_required: int = 3) -> pd.DataFrame:
+def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, dict]], min_neighbors_required: int = 2) -> pd.DataFrame:
     out = primary_df.copy()
 
     if len(neighbor_cols) == 0:
