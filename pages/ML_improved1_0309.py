@@ -34,32 +34,109 @@ st.set_page_config(
 
 st.title("🌡️ Advanced Temperature QC with Silver Labels")
 st.markdown("""
-This dashboard performs **advanced rule-based quality control**, **automatic silver-label generation**, and optional **supervised ML training** for hourly station temperature data.
+This dashboard performs **advanced rule-based quality control**, **automatic silver-label generation**, and **optional supervised machine-learning (ML) quality control** for hourly station temperature data.
 
-### Why silver labels?
-We use **silver labels** because **expert-reviewed true labels are not yet available**.  
-These labels are **high-confidence proxy labels**, not absolute truth.
+---
 
-### Silver label logic
-**High-confidence bad = 1**
-- temperature far outside station-season percentile bounds
-- sustained flatline with very low variance
-- large sustained disagreement with weighted median of 3+ correlated neighbors
-- implausible jump not seen in neighbors
-- issue occurs near known metadata event and is unsupported by neighbors
+## Why silver labels?
 
-**High-confidence good = 0**
-- within seasonal climatological percentile bounds
-- no rule-based flag
-- within acceptable range of 3+ neighbors
-- not near metadata event
-- not flagged by multiple anomaly methods
+Expert-reviewed **true quality-control labels are not yet available** for this dataset.
 
-**Uncertain = unlabeled**
-- everything else
+To enable model development and anomaly screening, the system generates **silver labels** — high-confidence **proxy labels** derived from physical rules, climatology, and spatial consistency checks.
 
-This is a practical first step until expert true labels are developed.
+Silver labels are **not absolute truth**.  
+They are intended for:
+
+• anomaly screening  
+• model bootstrapping  
+• identifying cases for expert review  
+
+---
+
+## Silver label logic
+
+### High-confidence bad (1)
+
+An observation is labeled **bad** when strong evidence suggests it is physically or instrumentally inconsistent.
+
+Examples include:
+
+• temperature far outside **station-season climatological percentiles**  
+• **sustained flatline behavior** indicating sensor persistence  
+• **large sustained disagreement with neighboring stations** when neighbors are available  
+• **implausible jumps** not supported by neighboring stations  
+• observations near **known metadata events** (e.g., station relocation or sensor change) that are unsupported by surrounding stations  
+
+These represent **high-confidence anomalies likely related to measurement issues or sensor behavior**.
+
+---
+
+### High-confidence good (0)
+
+An observation is labeled **good** when it satisfies conservative physical and climatological checks.
+
+Typical conditions include:
+
+• within **seasonal climatological bounds**  
+• **no rule-based QC flags**  
+• consistent with **available spatial context** when neighboring stations exist  
+• **not near metadata events**  
+• **not flagged by multiple anomaly detection methods**
+
+If spatial neighbors are unavailable or insufficient, the system can still assign good labels using **climatology consistency and rule-based stability checks**.
+
+---
+
+### Uncertain (unlabeled)
+
+Observations that do not meet strict criteria for either class remain **unlabeled**.
+
+These cases are ideal candidates for:
+
+• expert inspection  
+• manual quality control  
+• future training-label refinement  
+
+---
+
+## Spatial consistency checks
+
+When sufficient neighboring stations are available, the system performs **multi-station spatial consistency analysis**.
+
+This includes:
+
+• comparison against **weighted neighbor median anomalies**  
+• verification that neighboring stations agree with each other  
+• detection of **sustained disagreement events**
+
+If fewer suitable neighbors are available, the system automatically **reduces reliance on spatial checks** and uses climatology and rule-based diagnostics instead.
+
+---
+
+## Bootstrapping ML models
+
+Silver labels allow the system to **train supervised ML models** that learn patterns associated with high-confidence good and bad observations.
+
+However:
+
+**ML models are evaluated against the silver labels themselves**, not against expert truth labels.
+
+Therefore extremely high metrics (e.g., near-perfect precision or Kappa) indicate that the ML model successfully reproduces the silver labeling logic — **not that the ML model has been fully validated against real-world errors**.
+
+---
+
+## Scientific purpose
+
+This workflow provides a **practical first step toward operational quality control**:
+
+1. Apply physical and statistical QC rules  
+2. Generate **silver proxy labels**  
+3. Train ML models to assist detection  
+4. Prioritize uncertain observations for expert review  
+
+As expert-reviewed labels become available, they can replace silver labels to produce **fully validated ML-based quality-control systems**.
 """)
+
 
 # =============================================================================
 # CONSTANTS
