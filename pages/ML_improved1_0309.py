@@ -602,31 +602,7 @@ def build_spatial_qc(
     return out
 
 
-# =============================================================================
-# SPATIAL QC APPLICATION
-# =============================================================================
-if len(neighbor_dict) < 2:
-    st.warning(
-        "Limited spatial neighbors available — QC relies more heavily on climatology "
-        "and rule-based diagnostics."
-    )
-else:
-    st.info(f"Spatial QC using {len(neighbor_dict)} neighboring stations.")
 
-if len(neighbor_dict) > 0:
-    with st.spinner("Building weighted multi-neighbor spatial QC features..."):
-        df_primary, neighbor_cols = merge_neighbor_series(df_primary, neighbor_dict)
-        df_primary = build_spatial_qc(
-            df_primary,
-            neighbor_cols,
-            min_neighbors_required=min(2, len(neighbor_dict))
-        )
-else:
-    df_primary = build_spatial_qc(
-        df_primary,
-        [],
-        min_neighbors_required=2
-    )
 
 # =============================================================================
 # METADATA EVENTS
@@ -1215,15 +1191,33 @@ else:
 
         neighbor_dict = {k: v for k, v in neighbor_dict.items() if k in selected_files}
 
+
 # =============================================================================
-# SPATIAL QC FEATURES
+# SPATIAL QC APPLICATION
 # =============================================================================
+if len(neighbor_dict) < 2:
+    st.warning(
+        "Limited spatial neighbors available — QC relies more heavily on climatology "
+        "and rule-based diagnostics."
+    )
+else:
+    st.info(f"Spatial QC using {len(neighbor_dict)} neighboring stations.")
+
 if len(neighbor_dict) > 0:
     with st.spinner("Building weighted multi-neighbor spatial QC features..."):
         df_primary, neighbor_cols = merge_neighbor_series(df_primary, neighbor_dict)
-        df_primary = build_spatial_qc(df_primary, neighbor_cols, min_neighbors_required=min(2, len(neighbor_dict)))
+        df_primary = build_spatial_qc(
+            df_primary,
+            neighbor_cols,
+            min_neighbors_required=min(2, len(neighbor_dict))
+        )
 else:
-    df_primary = build_spatial_qc(df_primary, [], min_neighbors_required=2)
+    df_primary = build_spatial_qc(
+        df_primary,
+        [],
+        min_neighbors_required=2
+    )
+
 
 # =============================================================================
 # APPLY RULE-BASED QC
