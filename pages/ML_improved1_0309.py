@@ -635,7 +635,7 @@ def generate_silver_labels(df: pd.DataFrame) -> pd.DataFrame:
         out["implausible_jump_no_neighbor_support"].fillna(False) |
         (
             (out["metadata_event_flag"] == 1) &
-            (out["available_neighbors"] >= 3) &
+            (out["available_neighbors"] >= 2) &
             (out["spatial_anom_diff"].abs() > out["spatial_thresh"]) &
             (out["neighbor_neighbor_spread"] <= 3.0)
         )
@@ -653,7 +653,7 @@ def generate_silver_labels(df: pd.DataFrame) -> pd.DataFrame:
     high_conf_good = (
         out["within_seasonal_bounds"].fillna(False) &
         (~out["rule_flag"].fillna(False)) &
-        (out["available_neighbors"] >= 3) &
+        (out["available_neighbors"] >= 2) &
         (out["spatial_anom_diff"].abs() <= out["spatial_thresh"].fillna(np.inf)) &
         (out["neighbor_neighbor_spread"].fillna(np.inf) <= 3.0) &
         (out["metadata_event_flag"] == 0) &
@@ -960,9 +960,9 @@ else:
 if len(neighbor_dict) > 0:
     with st.spinner("Building weighted multi-neighbor spatial QC features..."):
         df_primary, neighbor_cols = merge_neighbor_series(df_primary, neighbor_dict)
-        df_primary = build_spatial_qc(df_primary, neighbor_cols, min_neighbors_required=min(3, len(neighbor_dict)))
+        df_primary = build_spatial_qc(df_primary, neighbor_cols, min_neighbors_required=min(2, len(neighbor_dict)))
 else:
-    df_primary = build_spatial_qc(df_primary, [], min_neighbors_required=3)
+    df_primary = build_spatial_qc(df_primary, [], min_neighbors_required=2)
 
 # =============================================================================
 # APPLY RULE-BASED QC
