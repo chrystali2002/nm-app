@@ -1411,14 +1411,15 @@ if ml_enabled:
                             ("imputer", SimpleImputer(strategy="median")),
                             ("scaler", StandardScaler()),
                             ("clf", RandomForestClassifier(
-                                n_estimators=400,
-                                max_depth=14,
-                                min_samples_leaf=3,
-                                class_weight="balanced",
+                                n_estimators=600,
+                                max_depth=16,
+                                min_samples_leaf=2,
+                                class_weight={0:1,1:12},
                                 random_state=42,
                                 n_jobs=-1
                             ))
                         ])
+                        
 
                         with st.spinner("Training Random Forest model..."):
                             pipe.fit(X_train, y_train)
@@ -1612,11 +1613,14 @@ if ml_enabled:
                         # -----------------------------------------------------------------
                         clf = pipe.named_steps["clf"]
                         feature_names = X_train.columns.tolist()
+                        importances_vals = clf.feature_importances_
+                        min_len = min(len(feature_names), len(importances_vals))
                         importances = pd.DataFrame({
-                            "feature": feature_names,
-                            "importance": clf.feature_importances_
+                            "feature": feature_names[:min_len],
+                            "importance": importances_vals[:min_len]
                         }).sort_values("importance", ascending=False).head(20)
 
+                       
                         st.subheader("Top ML Features")
                         st.dataframe(importances, use_container_width=True, hide_index=True)
 
