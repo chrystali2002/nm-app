@@ -474,9 +474,16 @@ def build_dynamic_rule_features(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # SPATIAL QC
 # =============================================================================
-def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, dict]], min_neighbors_required: int = 2) -> pd.DataFrame:
+def build_spatial_qc(
+    primary_df: pd.DataFrame,
+    neighbor_cols: List[Tuple[str, dict]],
+    min_neighbors_required: int = 2
+) -> pd.DataFrame:
     out = primary_df.copy()
 
+    # -------------------------------------------------------------------------
+    # No usable neighbors
+    # -------------------------------------------------------------------------
     if len(neighbor_cols) == 0:
         out["available_neighbors"] = 0
         out["neighbor_weighted_mean"] = np.nan
@@ -489,24 +496,30 @@ def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, di
         out["spatial_thresh"] = np.nan
         out["spatial_instant_flag"] = False
         out["spatial_sustained_flag"] = False
+        out["neighbor_median_dT1"] = np.nan
         out["implausible_jump_no_neighbor_support"] = False
         return out
 
     robust_vals = []
     robust_weights = []
     corr_vals = []
-
     temp_cols = []
 
+    # -------------------------------------------------------------------------
+    # Build weighted neighbor fields
+    # -------------------------------------------------------------------------
     for col, info in neighbor_cols:
-        corr_val = info["correlation"]
-        dist = info["distance_km"]
-        elev_diff = info["elev_diff_m"]
+        corr_val = info.get("correlation", np.nan)
+        dist = info.get("distance_km", np.nan)
+        elev_diff = info.get("elev_diff_m", np.nan)
 
         weight = 1.0
         if pd.notna(corr_val):
-            weight *= max(corr_val, 0.05)
-        weight *= 1.0 / max(float(dist), 1.0)
+            weight *= max(float(corr_val), 0.05)
+
+        if pd.notna(dist):
+            weight *= 1.0 / max(float(dist), 1.0)
+
         if pd.notna(elev_diff):
             weight *= 1.0 / (1.0 + float(elev_diff) / 100.0)
 
@@ -522,16 +535,23 @@ def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, di
 
     out["available_neighbors"] = stacked.notna().sum(axis=1)
 
+    # Weighted mean neighbor temperature
     weights = np.array(robust_weights, dtype=float)
     weighted_num = stacked.mul(weights, axis=1).sum(axis=1, skipna=True)
     weighted_den = stacked.notna().mul(weights, axis=1).sum(axis=1, skipna=True)
     out["neighbor_weighted_mean"] = weighted_num / weighted_den.replace(0, np.nan)
 
+    # Robust ensemble summaries
     out["neighbor_median"] = stacked.median(axis=1)
     out["neighbor_neighbor_spread"] = stacked.std(axis=1)
 
+    # -------------------------------------------------------------------------
+    # Spatial anomaly diagnostics
+    # -------------------------------------------------------------------------
     out["primary_anom"] = out["T_air"] - out["rolling_mean_24h"]
-    out["neighbor_median_anom"] = out["neighbor_median"] - out["neighbor_median"].rolling(24, min_periods=12).mean()
+    out["neighbor_median_anom"] = (
+        out["neighbor_median"] - out["neighbor_median"].rolling(24, min_periods=12).mean()
+    )
     out["spatial_diff_to_median"] = out["T_air"] - out["neighbor_median"]
     out["spatial_anom_diff"] = out["primary_anom"] - out["neighbor_median_anom"]
 
@@ -545,7 +565,10 @@ def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, di
 
     out["spatial_instant_flag"] = (
         (out["available_neighbors"] >= min_neighbors_required) &
-        (out["neighbor_neighbor_spread"] <= 3.0) &
+        (
+            out["neighbor_neighbor_spread"].isna() |
+            (out["neighbor_neighbor_spread"] <= 3.0)
+        ) &
         (out["spatial_anom_diff"].abs() > out["spatial_thresh"])
     )
 
@@ -553,7 +576,9 @@ def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, di
         out["spatial_instant_flag"].rolling(4, min_periods=3).sum() >= 3
     ).fillna(False)
 
-    # Implausible jump not seen in neighbors
+    # -------------------------------------------------------------------------
+    # Implausible jump not supported by neighbors
+    # -------------------------------------------------------------------------
     neighbor_diff_cols = []
     for col in temp_cols:
         out[f"{col}_dT1"] = out[col].diff(1)
@@ -564,7 +589,10 @@ def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, di
         out["implausible_jump_no_neighbor_support"] = (
             (out["dT_1h"].abs() > out["spike_thresh_1h"]) &
             (out["available_neighbors"] >= min_neighbors_required) &
-            (out["neighbor_neighbor_spread"] <= 3.0) &
+            (
+                out["neighbor_neighbor_spread"].isna() |
+                (out["neighbor_neighbor_spread"] <= 3.0)
+            ) &
             (out["neighbor_median_dT1"].abs() < 2.0)
         )
     else:
@@ -572,8 +600,33 @@ def build_spatial_qc(primary_df: pd.DataFrame, neighbor_cols: List[Tuple[str, di
         out["implausible_jump_no_neighbor_support"] = False
 
     return out
+
+
+# =============================================================================
+# SPATIAL QC APPLICATION
+# =============================================================================
 if len(neighbor_dict) < 2:
-    st.warning("Limited spatial neighbors available — QC relies more heavily on climatology and rule-based diagnostics.")
+    st.warning(
+        "Limited spatial neighbors available — QC relies more heavily on climatology "
+        "and rule-based diagnostics."
+    )
+else:
+    st.info(f"Spatial QC using {len(neighbor_dict)} neighboring stations.")
+
+if len(neighbor_dict) > 0:
+    with st.spinner("Building weighted multi-neighbor spatial QC features..."):
+        df_primary, neighbor_cols = merge_neighbor_series(df_primary, neighbor_dict)
+        df_primary = build_spatial_qc(
+            df_primary,
+            neighbor_cols,
+            min_neighbors_required=min(2, len(neighbor_dict))
+        )
+else:
+    df_primary = build_spatial_qc(
+        df_primary,
+        [],
+        min_neighbors_required=2
+    )
 
 # =============================================================================
 # METADATA EVENTS
