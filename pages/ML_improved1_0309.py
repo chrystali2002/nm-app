@@ -624,10 +624,38 @@ def generate_silver_labels(df: pd.DataFrame) -> pd.DataFrame:
       1 = high-confidence bad
       0 = high-confidence good
       NaN = uncertain / unlabeled
+
+    This version is intentionally more permissive for the GOOD class so that
+    supervised ML can train on both classes while still keeping labels conservative.
     """
     out = df.copy()
 
-    # High-confidence bad logic
+    # -------------------------------------------------------------------------
+    # Safety defaults in case some columns are missing
+    # -------------------------------------------------------------------------
+    required_defaults = {
+        "far_outside_seasonal_bounds": False,
+        "flatline_flag": False,
+        "spatial_sustained_flag": False,
+        "implausible_jump_no_neighbor_support": False,
+        "metadata_event_flag": 0,
+        "available_neighbors": 0,
+        "spatial_anom_diff": np.nan,
+        "spatial_thresh": np.nan,
+        "neighbor_neighbor_spread": np.nan,
+        "rule_flag": False,
+        "aux_iforest_flag": False,
+        "spatial_instant_flag": False,
+        "within_seasonal_bounds": False,
+    }
+
+    for col, default_val in required_defaults.items():
+        if col not in out.columns:
+            out[col] = default_val
+
+    # -------------------------------------------------------------------------
+    # BAD LABEL LOGIC (kept strong / conservative)
+    # -------------------------------------------------------------------------
     high_conf_bad = (
         out["far_outside_seasonal_bounds"].fillna(False) |
         out["flatline_flag"].fillna(False) |
@@ -636,57 +664,140 @@ def generate_silver_labels(df: pd.DataFrame) -> pd.DataFrame:
         (
             (out["metadata_event_flag"] == 1) &
             (out["available_neighbors"] >= 2) &
-            (out["spatial_anom_diff"].abs() > out["spatial_thresh"]) &
-            (out["neighbor_neighbor_spread"] <= 3.0)
+            (out["spatial_anom_diff"].abs() > out["spatial_thresh"].fillna(np.inf)) &
+            (
+                out["neighbor_neighbor_spread"].isna() |
+                (out["neighbor_neighbor_spread"] <= 4.5)
+            )
         )
     )
 
-    # Multiple anomaly methods
-    anomaly_vote_count = (
+    # -------------------------------------------------------------------------
+    # MULTI-METHOD ANOMALY VOTE
+    # -------------------------------------------------------------------------
+    out["anomaly_vote_count"] = (
         out["rule_flag"].fillna(False).astype(int) +
         out["aux_iforest_flag"].fillna(False).astype(int) +
         out["spatial_instant_flag"].fillna(False).astype(int)
     )
-    out["anomaly_vote_count"] = anomaly_vote_count
 
-    # High-confidence good logic
+    # -------------------------------------------------------------------------
+    # GOOD LABEL LOGIC (relaxed so you can actually get class 0)
+    #
+    # Changes from before:
+    # 1. neighbors >= 2 instead of 3
+    # 2. allow missing spatial data
+    # 3. allow slightly looser spatial agreement
+    # 4. allow slightly looser neighbor spread
+    # -------------------------------------------------------------------------
+    spatial_acceptable = (
+        out["spatial_anom_diff"].isna() |
+        out["spatial_thresh"].isna() |
+        (out["spatial_anom_diff"].abs() <= out["spatial_thresh"].fillna(np.inf) * 1.25)
+    )
+
+    spread_acceptable = (
+        out["neighbor_neighbor_spread"].isna() |
+        (out["neighbor_neighbor_spread"] <= 4.5)
+    )
+
+    neighbor_ok = (
+        (out["available_neighbors"] >= 2) |
+        out["spatial_anom_diff"].isna()
+    )
+
     high_conf_good = (
         out["within_seasonal_bounds"].fillna(False) &
         (~out["rule_flag"].fillna(False)) &
-        (out["available_neighbors"] >= 2) &
-        (out["spatial_anom_diff"].abs() <= out["spatial_thresh"].fillna(np.inf)) &
-        (out["neighbor_neighbor_spread"].fillna(np.inf) <= 3.0) &
+        neighbor_ok &
+        spatial_acceptable &
+        spread_acceptable &
         (out["metadata_event_flag"] == 0) &
         (out["anomaly_vote_count"] <= 1)
     )
 
-    # Assign silver label
+    # -------------------------------------------------------------------------
+    # INITIAL LABEL ASSIGNMENT
+    # -------------------------------------------------------------------------
     out["silver_label"] = np.nan
     out.loc[high_conf_bad, "silver_label"] = 1.0
     out.loc[high_conf_good & ~high_conf_bad, "silver_label"] = 0.0
 
-    # Human-readable source / reason
+    # -------------------------------------------------------------------------
+    # FALLBACK CLEAN SAMPLE
+    #
+    # If no good labels survive, create a conservative bootstrap good sample from:
+    # - within seasonal bounds
+    # - no rule flag
+    # - no metadata event
+    # This keeps the pipeline usable for ML bootstrapping.
+    # -------------------------------------------------------------------------
+    n_good = int((out["silver_label"] == 0).sum())
+
+    if n_good == 0:
+        fallback_good_mask = (
+            out["within_seasonal_bounds"].fillna(False) &
+            (~out["rule_flag"].fillna(False)) &
+            (out["metadata_event_flag"] == 0)
+        )
+
+        fallback_candidates = out[fallback_good_mask].copy()
+
+        if len(fallback_candidates) > 0:
+            n_bad = int((out["silver_label"] == 1).sum())
+
+            # Choose a moderate fallback size:
+            # at least 200 if available, otherwise up to number of bad labels, capped at 1000
+            fallback_n = min(
+                len(fallback_candidates),
+                max(200, min(1000, n_bad if n_bad > 0 else 500))
+            )
+
+            fallback_idx = fallback_candidates.sample(
+                n=fallback_n,
+                random_state=42
+            ).index
+
+            out.loc[fallback_idx, "silver_label"] = 0.0
+            out.loc[fallback_idx, "silver_reason"] = "Fallback high-confidence good"
+
+    # -------------------------------------------------------------------------
+    # REASON STRINGS
+    # -------------------------------------------------------------------------
     def _silver_reason(row):
         if pd.isna(row["silver_label"]):
             return "Uncertain"
+
         if row["silver_label"] == 1:
             reasons = []
-            if row["far_outside_seasonal_bounds"]:
+            if bool(row["far_outside_seasonal_bounds"]):
                 reasons.append("Far outside seasonal bounds")
-            if row["flatline_flag"]:
+            if bool(row["flatline_flag"]):
                 reasons.append("Sustained flatline")
-            if row["spatial_sustained_flag"]:
+            if bool(row["spatial_sustained_flag"]):
                 reasons.append("Sustained spatial disagreement")
-            if row["implausible_jump_no_neighbor_support"]:
+            if bool(row["implausible_jump_no_neighbor_support"]):
                 reasons.append("Implausible jump unsupported by neighbors")
-            if row["metadata_event_flag"] == 1:
+            if int(row["metadata_event_flag"]) == 1:
                 reasons.append("Near metadata event")
             return "; ".join(reasons) if reasons else "High-confidence bad"
+
+        # keep fallback reason if already assigned
+        existing_reason = row.get("silver_reason", None)
+        if isinstance(existing_reason, str) and existing_reason.strip():
+            return existing_reason
+
         return "High-confidence good"
 
-    out["silver_reason"] = out.apply(_silver_reason, axis=1)
+    if "silver_reason" not in out.columns:
+        out["silver_reason"] = ""
 
-    # Priority for expert review
+    needs_reason = out["silver_reason"].isna() | (out["silver_reason"].astype(str).str.strip() == "")
+    out.loc[needs_reason, "silver_reason"] = out.loc[needs_reason].apply(_silver_reason, axis=1)
+
+    # -------------------------------------------------------------------------
+    # REVIEW PRIORITY
+    # -------------------------------------------------------------------------
     out["review_priority"] = "Low"
     out.loc[out["silver_label"].isna(), "review_priority"] = "Medium"
     out.loc[
@@ -699,7 +810,26 @@ def generate_silver_labels(df: pd.DataFrame) -> pd.DataFrame:
         "review_priority"
     ] = "High"
 
+    # -------------------------------------------------------------------------
+    # DEBUG COUNTS
+    # -------------------------------------------------------------------------
+    out.attrs["silver_debug_counts"] = {
+        "within_seasonal_bounds": int(out["within_seasonal_bounds"].fillna(False).sum()),
+        "not_rule_flag": int((~out["rule_flag"].fillna(False)).sum()),
+        "available_neighbors_ge_2": int((out["available_neighbors"] >= 2).sum()),
+        "spatial_acceptable": int(spatial_acceptable.fillna(False).sum()),
+        "neighbor_spread_acceptable": int(spread_acceptable.fillna(False).sum()),
+        "metadata_event_flag_eq_0": int((out["metadata_event_flag"] == 0).sum()),
+        "anomaly_vote_count_le_1": int((out["anomaly_vote_count"] <= 1).sum()),
+        "high_conf_bad": int(high_conf_bad.sum()),
+        "high_conf_good": int(high_conf_good.sum()),
+        "silver_bad_final": int((out["silver_label"] == 1).sum()),
+        "silver_good_final": int((out["silver_label"] == 0).sum()),
+        "silver_uncertain_final": int(out["silver_label"].isna().sum()),
+    }
+
     return out
+
 
 
 # =============================================================================
@@ -981,6 +1111,21 @@ with st.spinner("Running auxiliary anomaly detector..."):
 # =============================================================================
 with st.spinner("Generating silver labels..."):
     df_primary = generate_silver_labels(df_primary)
+debug_counts = df_primary.attrs.get("silver_debug_counts", {})
+
+st.subheader("Silver Label Rule Diagnostics")
+st.write("within_seasonal_bounds:", debug_counts.get("within_seasonal_bounds", "N/A"))
+st.write("not rule_flag:", debug_counts.get("not_rule_flag", "N/A"))
+st.write("available_neighbors >= 2:", debug_counts.get("available_neighbors_ge_2", "N/A"))
+st.write("spatial acceptable:", debug_counts.get("spatial_acceptable", "N/A"))
+st.write("neighbor spread acceptable:", debug_counts.get("neighbor_spread_acceptable", "N/A"))
+st.write("metadata_event_flag == 0:", debug_counts.get("metadata_event_flag_eq_0", "N/A"))
+st.write("anomaly_vote_count <= 1:", debug_counts.get("anomaly_vote_count_le_1", "N/A"))
+st.write("high_conf_bad:", debug_counts.get("high_conf_bad", "N/A"))
+st.write("high_conf_good:", debug_counts.get("high_conf_good", "N/A"))
+st.write("silver_bad_final:", debug_counts.get("silver_bad_final", "N/A"))
+st.write("silver_good_final:", debug_counts.get("silver_good_final", "N/A"))
+st.write("silver_uncertain_final:", debug_counts.get("silver_uncertain_final", "N/A"))  
 
 st.subheader("Silver Label Summary")
 c1, c2, c3 = st.columns(3)
