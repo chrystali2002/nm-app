@@ -25,6 +25,7 @@ st.set_page_config(
 
 st.title("🔄 ML vs Rule-Based: Comprehensive Comparison")
 st.markdown("""
+The code is good as an exploratory comparison tool, but it is not yet scientifically rigorous enough to serve as a standalone validated temperature QA/QC system.
 This page allows you to select specific stations and compare multiple ML-based vs rule-based anomaly detection methods.
 The rule-based system includes **spatial checks using configurable neighbor station distances** for robust quality control.
 """)
