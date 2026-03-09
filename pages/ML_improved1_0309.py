@@ -828,7 +828,7 @@ year_range = st.sidebar.slider("Year Range", 2000, 2025, (2018, 2023))
 years = tuple(range(year_range[0], year_range[1] + 1))
 
 st.sidebar.subheader("Neighbor controls")
-max_neighbors = st.sidebar.slider("Use top neighbors", 3, 5, 4)
+max_neighbors = st.sidebar.slider("Use top neighbors", 2, 4, 3)
 max_distance_km = st.sidebar.selectbox("Max neighbor distance (km)", [10, 20, 30, 50, 100, 200], index=2)
 max_elev_diff = st.sidebar.selectbox("Max elevation difference (m)", [100, 200, 300, 500, 800], index=2)
 min_corr = st.sidebar.slider("Minimum correlation", 0.30, 0.95, 0.60, 0.05)
