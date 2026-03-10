@@ -20,6 +20,7 @@ from qc_core import (
     load_station_metadata,
     run_pipeline,
     zip_directory,
+    build_station_preview,
 )
 
 st.set_page_config(
@@ -46,6 +47,29 @@ A Streamlit interface for NOAA hourly temperature QA/QC using:
 def get_station_metadata():
     return load_station_metadata()
 
+@st.cache_data(show_spinner=False)
+def get_station_preview_cached(
+    state: str,
+    start_year: int,
+    end_year: int,
+    primary_filename: str | None,
+    primary_name: str | None,
+    max_distance_km: float,
+    max_elev_diff: float,
+):
+    stations = load_station_metadata()
+    return build_station_preview(
+        stations=stations,
+        state=state,
+        start_year=start_year,
+        end_year=end_year,
+        primary_filename=primary_filename,
+        primary_name=primary_name,
+        max_distance_km=max_distance_km,
+        max_elev_diff=max_elev_diff,
+        max_candidates=10,
+    )
+
 stations_all = get_station_metadata()
 
 # -----------------------------------------------------------------------------
@@ -69,7 +93,7 @@ with st.sidebar:
 
     if station_mode == "Select from list":
         if not stations_state.empty:
-            stations_state = stations_state.sort_values("STATION NAME")
+            stations_state = stations_state.sort_values("STATION NAME").copy()
             stations_state["display"] = stations_state["STATION NAME"] + " | " + stations_state["FILENAME"]
             selected_display = st.selectbox("Choose station", stations_state["display"].tolist())
             selected_row = stations_state[stations_state["display"] == selected_display].iloc[0]
@@ -139,17 +163,71 @@ with st.sidebar:
         spatial = daily_counts = confusion_matrix = False
         holdout_probability = yearly_comparison = feature_importance = False
 
+    st.subheader("Actions")
+    preview_button = st.button("Preview Station Availability", use_container_width=True)
     run_button = st.button("Run QC Pipeline", type="primary", use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# MAIN
+# PREVIEW PANEL
 # -----------------------------------------------------------------------------
-if not run_button:
-    st.info("Configure the sidebar and click **Run QC Pipeline**.")
-    st.stop()
+preview_requested = preview_button or (
+    primary_filename is not None or primary_name is not None
+)
 
 if end_year < start_year:
     st.error("End year must be greater than or equal to start year.")
+    st.stop()
+
+if preview_requested:
+    st.subheader("🔎 Station Availability Preview")
+
+    try:
+        preview = get_station_preview_cached(
+            state=state,
+            start_year=int(start_year),
+            end_year=int(end_year),
+            primary_filename=primary_filename,
+            primary_name=primary_name,
+            max_distance_km=float(max_distance_km),
+            max_elev_diff=float(max_elev_diff),
+        )
+
+        summary = preview["summary"]
+        meta = preview["station_metadata"]
+        year_coverage = preview["year_coverage"]
+        neighbor_preview = preview["neighbor_preview"]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Years requested", summary["years_requested_count"])
+        c2.metric("Years found", summary["years_found_count"])
+        c3.metric("Total rows found", f"{summary['total_rows_found']:,}")
+        c4.metric("Candidate neighbors", summary["candidate_neighbors_found"])
+
+        st.markdown("**Station metadata**")
+        st.json(meta)
+
+        st.markdown("**Approximate yearly availability**")
+        display_cov = year_coverage.copy()
+        for col in ["first_timestamp", "last_timestamp"]:
+            if col in display_cov.columns:
+                display_cov[col] = pd.to_datetime(display_cov[col], errors="coerce")
+                display_cov[col] = display_cov[col].astype(str).replace("NaT", "")
+        st.dataframe(display_cov, use_container_width=True)
+
+        st.markdown("**Nearby candidate neighbors (preview)**")
+        if neighbor_preview is not None and not neighbor_preview.empty:
+            st.dataframe(neighbor_preview, use_container_width=True)
+        else:
+            st.info("No nearby candidate neighbors were found with the current distance/elevation filters.")
+
+    except Exception as e:
+        st.warning(f"Preview unavailable: {e}")
+
+# -----------------------------------------------------------------------------
+# MAIN RUN
+# -----------------------------------------------------------------------------
+if not run_button:
+    st.info("Use the preview above to inspect station availability, then click **Run QC Pipeline**.")
     st.stop()
 
 with tempfile.TemporaryDirectory() as tmpdir:
