@@ -375,14 +375,15 @@ def preview_candidate_neighbors(
     preview_years_to_sample: Optional[List[int]] = None,
 ) -> pd.DataFrame:
     candidates = find_candidate_neighbors(
-        primary_row=primary_station,
+        primary_station=primary_station,
         station_df=station_df,
         max_candidates=max_candidates,
         max_distance_km=max_distance_km,
         max_elev_diff=max_elev_diff,
     )
-    
 
+
+    
     if candidates.empty:
         return candidates
 
