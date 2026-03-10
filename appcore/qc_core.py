@@ -8,20 +8,41 @@ Run:
 
 from __future__ import annotations
 
-import tempfile
+import io
+import math
+import zipfile
+import warnings
 from pathlib import Path
+from typing import Dict, Optional, Tuple, List, Callable
+from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
-import streamlit as st
+import matplotlib.pyplot as plt
 
-from qc_core import (
-    QCArgs,
-    FigureOptions,
-    load_station_metadata,
-    run_pipeline,
-    zip_directory,
-    build_station_preview,
+from scipy.stats import pearsonr
+from geopy.distance import geodesic
+
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    GradientBoostingClassifier,
+    ExtraTreesClassifier,
+    IsolationForest,
 )
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    matthews_corrcoef,
+    cohen_kappa_score,
+    precision_recall_fscore_support,
+)
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+
+warnings.filterwarnings("ignore")
+
 
 st.set_page_config(
     page_title="Advanced Temperature QC",
