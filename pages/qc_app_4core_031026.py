@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Add app root to Python path so pages/ can import qc_core.py
+# Allow pages/ to import from project root
 APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -20,7 +20,7 @@ import tempfile
 import pandas as pd
 import streamlit as st
 
-from qc_core import (
+from appcore.qc_core import (
     QCArgs,
     FigureOptions,
     load_station_metadata,
@@ -28,6 +28,8 @@ from qc_core import (
     zip_directory,
     build_station_preview,
 )
+
+
 
 st.set_page_config(
     page_title="Advanced Temperature QC",
