@@ -12,7 +12,7 @@ import zipfile
 import warnings
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -107,7 +107,7 @@ class QCArgs:
     n_test_years: Optional[int] = None
     ml_prob_threshold: float = 0.80
 
-    figure_options: FigureOptions = FigureOptions()
+    figure_options: FigureOptions = field(default_factory=FigureOptions)
 
 
 # =============================================================================
@@ -230,6 +230,17 @@ def load_station_metadata() -> pd.DataFrame:
     if "STATION NAME" not in stations.columns:
         stations["STATION NAME"] = stations["USAF"] + "-" + stations["WBAN"]
 
+    # begin/end availability from metadata if present
+    if "BEGIN" in stations.columns:
+        stations["BEGIN"] = pd.to_datetime(stations["BEGIN"], format="%Y%m%d", errors="coerce")
+    else:
+        stations["BEGIN"] = pd.NaT
+
+    if "END" in stations.columns:
+        stations["END"] = pd.to_datetime(stations["END"], format="%Y%m%d", errors="coerce")
+    else:
+        stations["END"] = pd.NaT
+
     return stations
 
 
@@ -277,6 +288,198 @@ def load_station_years(filename: str, years: Tuple[int, ...]) -> pd.DataFrame:
     out = pd.concat(frames).sort_index()
     out = out[~out.index.duplicated(keep="first")]
     return out
+
+
+# =============================================================================
+# PREVIEW HELPERS
+# =============================================================================
+def summarize_station_metadata_row(row: pd.Series) -> dict:
+    begin = row.get("BEGIN", pd.NaT)
+    end = row.get("END", pd.NaT)
+
+    return {
+        "station_name": row.get("STATION NAME", ""),
+        "filename": row.get("FILENAME", ""),
+        "state": row.get("STATE", ""),
+        "usaf": row.get("USAF", ""),
+        "wban": row.get("WBAN", ""),
+        "latitude": row.get("LAT", np.nan),
+        "longitude": row.get("LON", np.nan),
+        "elevation_m": row.get("ELEV_M", np.nan),
+        "metadata_begin": None if pd.isna(begin) else str(begin.date()),
+        "metadata_end": None if pd.isna(end) else str(end.date()),
+    }
+
+
+def get_station_match(
+    stations: pd.DataFrame,
+    state: str,
+    primary_filename: Optional[str] = None,
+    primary_name: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    filtered = stations.copy()
+    if state:
+        filtered = filtered[filtered["STATE"] == state.upper()].copy()
+
+    if filtered.empty:
+        raise ValueError("No stations found after applying state filter.")
+
+    if primary_filename:
+        matches = filtered[filtered["FILENAME"] == primary_filename].copy()
+    elif primary_name:
+        matches = filtered[filtered["STATION NAME"].str.contains(primary_name, case=False, na=False)].copy()
+    else:
+        raise ValueError("Provide either primary_filename or primary_name.")
+
+    if matches.empty:
+        raise ValueError("No matching primary station found.")
+
+    return filtered, matches.iloc[0]
+
+
+def preview_station_year_coverage(filename: str, start_year: int, end_year: int) -> pd.DataFrame:
+    rows = []
+
+    for year in range(start_year, end_year + 1):
+        url = ACCESS_BASE_URL.format(year=year, filename=filename)
+        df = load_access_csv(url)
+
+        if df.empty:
+            rows.append({
+                "year": year,
+                "available": False,
+                "n_rows": 0,
+                "first_timestamp": pd.NaT,
+                "last_timestamp": pd.NaT,
+            })
+        else:
+            rows.append({
+                "year": year,
+                "available": True,
+                "n_rows": int(len(df)),
+                "first_timestamp": df.index.min(),
+                "last_timestamp": df.index.max(),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def preview_candidate_neighbors(
+    primary_station: pd.Series,
+    station_df: pd.DataFrame,
+    start_year: int,
+    end_year: int,
+    max_candidates: int = 10,
+    max_distance_km: float = 200.0,
+    max_elev_diff: float = 300.0,
+    preview_years_to_sample: Optional[List[int]] = None,
+) -> pd.DataFrame:
+    candidates = find_candidate_neighbors(
+        primary_station=primary_station,
+        station_df=station_df,
+        max_candidates=max_candidates,
+        max_distance_km=max_distance_km,
+        max_elev_diff=max_elev_diff,
+    )
+
+    if candidates.empty:
+        return candidates
+
+    if preview_years_to_sample is None:
+        all_years = list(range(start_year, end_year + 1))
+        if len(all_years) <= 3:
+            preview_years_to_sample = all_years
+        else:
+            mid = all_years[len(all_years) // 2]
+            preview_years_to_sample = sorted(list({all_years[0], mid, all_years[-1]}))
+
+    primary_preview = load_station_years(primary_station["FILENAME"], tuple(preview_years_to_sample))
+
+    rows = []
+    for _, nbr in candidates.iterrows():
+        nbr_preview = load_station_years(nbr["FILENAME"], tuple(preview_years_to_sample))
+
+        if primary_preview.empty or nbr_preview.empty:
+            corr = np.nan
+            overlap = 0
+            available_sample_years = (
+                nbr_preview.index.year.nunique() if not nbr_preview.empty else 0
+            )
+        else:
+            corr, overlap = compute_pairwise_climatology_correlation(primary_preview, nbr_preview)
+            available_sample_years = nbr_preview.index.year.nunique()
+
+        rows.append({
+            "neighbor_name": nbr["STATION NAME"],
+            "filename": nbr["FILENAME"],
+            "distance_km": round(float(nbr["distance_km"]), 2),
+            "elev_diff_m": None if pd.isna(nbr["elev_diff_m"]) else round(float(nbr["elev_diff_m"]), 2),
+            "sample_years_present": int(available_sample_years),
+            "sample_corr_to_primary": None if pd.isna(corr) else round(float(corr), 3),
+            "sample_overlap_points": int(overlap),
+        })
+
+    return pd.DataFrame(rows).sort_values(
+        ["sample_corr_to_primary", "distance_km"],
+        ascending=[False, True],
+        na_position="last"
+    )
+
+
+def build_station_preview(
+    stations: pd.DataFrame,
+    state: str,
+    start_year: int,
+    end_year: int,
+    primary_filename: Optional[str] = None,
+    primary_name: Optional[str] = None,
+    max_distance_km: float = 30.0,
+    max_elev_diff: float = 300.0,
+    max_candidates: int = 10,
+) -> dict:
+    filtered, primary_station = get_station_match(
+        stations=stations,
+        state=state,
+        primary_filename=primary_filename,
+        primary_name=primary_name,
+    )
+
+    station_meta = summarize_station_metadata_row(primary_station)
+    year_coverage = preview_station_year_coverage(
+        filename=primary_station["FILENAME"],
+        start_year=start_year,
+        end_year=end_year,
+    )
+    neighbor_preview = preview_candidate_neighbors(
+        primary_station=primary_station,
+        station_df=filtered,
+        start_year=start_year,
+        end_year=end_year,
+        max_candidates=max_candidates,
+        max_distance_km=max_distance_km,
+        max_elev_diff=max_elev_diff,
+    )
+
+    available_years = int(year_coverage["available"].sum())
+    total_rows = int(year_coverage["n_rows"].sum())
+    first_avail = year_coverage.loc[year_coverage["available"], "year"].min() if available_years > 0 else None
+    last_avail = year_coverage.loc[year_coverage["available"], "year"].max() if available_years > 0 else None
+
+    return {
+        "primary_station": primary_station,
+        "station_metadata": station_meta,
+        "year_coverage": year_coverage,
+        "neighbor_preview": neighbor_preview,
+        "summary": {
+            "requested_years": f"{start_year}-{end_year}",
+            "years_requested_count": end_year - start_year + 1,
+            "years_found_count": available_years,
+            "total_rows_found": total_rows,
+            "first_found_year": None if pd.isna(first_avail) else int(first_avail),
+            "last_found_year": None if pd.isna(last_avail) else int(last_avail),
+            "candidate_neighbors_found": int(len(neighbor_preview)),
+        }
+    }
 
 
 # =============================================================================
