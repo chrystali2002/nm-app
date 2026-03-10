@@ -375,12 +375,13 @@ def preview_candidate_neighbors(
     preview_years_to_sample: Optional[List[int]] = None,
 ) -> pd.DataFrame:
     candidates = find_candidate_neighbors(
-        primary_station=primary_station,
+        primary_row=primary_station,
         station_df=station_df,
         max_candidates=max_candidates,
         max_distance_km=max_distance_km,
         max_elev_diff=max_elev_diff,
     )
+    
 
     if candidates.empty:
         return candidates
@@ -531,7 +532,7 @@ def attach_climatology(df: pd.DataFrame, clim_df: pd.DataFrame) -> pd.DataFrame:
 # NEIGHBORS
 # =============================================================================
 def find_candidate_neighbors(
-    primary_row: pd.Series,
+    primary_station: pd.Series,
     station_df: pd.DataFrame,
     max_candidates: int = 10,
     max_distance_km: float = 200.0,
@@ -539,10 +540,10 @@ def find_candidate_neighbors(
 ) -> pd.DataFrame:
     records = []
 
-    plat = float(primary_row["LAT"])
-    plon = float(primary_row["LON"])
-    pelev = pd.to_numeric(primary_row.get("ELEV_M", np.nan), errors="coerce")
-    primary_filename = primary_row["FILENAME"]
+    plat = float(primary_station["LAT"])
+    plon = float(primary_station["LON"])
+    pelev = pd.to_numeric(primary_station.get("ELEV_M", np.nan), errors="coerce")
+    primary_filename = primary_station["FILENAME"]
 
     for _, row in station_df.iterrows():
         if row["FILENAME"] == primary_filename:
