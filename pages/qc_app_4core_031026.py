@@ -83,7 +83,7 @@ with st.expander("📡 Data Source: ASOS Network", expanded=True):
 
         • **Source:** NOAA Integrated Surface Database (ISD)  
         • **Format:** Global Hourly (CSV)  
-        • **Period analyzed:** 2011–2024  
+        • **Period analyzed:** 2000-–2024  
         • **Variable used in this analysis:** Surface air temperature (`TMP`)
         """)
 
