@@ -30,23 +30,98 @@ from appcore.qc_core import (
 )
 
 
+import streamlit as st
 
 st.set_page_config(
-    page_title="Advanced Temperature QC",
+    page_title="New Mexico Temperature QA/QC",
     page_icon="🌡️",
     layout="wide"
 )
 
-st.title("🌡️ Advanced Temperature QC with Silver Labels")
-st.write(
-    """
-A Streamlit interface for NOAA hourly temperature QA/QC using:
-- climatology-aware rules
-- spatial neighbor checks
-- silver labels
-- optional supervised machine learning
-"""
-)
+# -------------------------------
+# TITLE
+# -------------------------------
+st.title("🌡️ New Mexico Hourly Surface Air Temperature QA/QC Analysis")
+
+st.markdown("""
+This application performs enhanced multi-tier quality assurance and quality control (QA/QC) 
+analysis on hourly surface air temperature observations from ASOS (Automated Surface Observing System) 
+stations in New Mexico.
+
+It includes:
+- **Multi-tier QA/QC checks** (range, spike, flatline, and spatial consistency)
+- **Station-level summary statistics**
+- **Flag pattern analysis** (clustering, recurrence, and seasonality)
+- **Raw vs validated data comparison**
+- **Decision-matrix-based classification** for flagged observations
+- **Enhanced visualizations** with statistical overlays
+""")
+
+# -------------------------------
+# DATA SOURCE SECTION
+# -------------------------------
+with st.expander("📡 Data Source: ASOS Network", expanded=True):
+
+    col1, col2 = st.columns([2,1])
+
+    with col1:
+        st.markdown("""
+        ### Automated Surface Observing System (ASOS)
+
+        The **Automated Surface Observing System (ASOS)** is a nationwide network of automated
+        weather observing stations operated primarily by the **National Weather Service (NWS)**,
+        **Federal Aviation Administration (FAA)**, and **Department of Defense (DoD)**.
+
+        **Key Characteristics**
+
+        • Nationwide station coverage including multiple stations in New Mexico  
+        • Hourly observations (some stations report more frequently)  
+        • Measures temperature, dew point, wind, precipitation, pressure, and visibility  
+        • Raw observations may include automated QC indicators  
+
+        **Data Access**
+
+        • **Source:** NOAA Integrated Surface Database (ISD)  
+        • **Format:** Global Hourly (CSV)  
+        • **Period analyzed:** 2011–2024  
+        • **Variable used in this analysis:** Surface air temperature (`TMP`)
+        """)
+
+    with col2:
+        st.markdown("""
+        ### Station Map Legend
+
+        🟢 **<5% flags** — Good quality  
+        🟡 **5–10% flags** — Moderate issues  
+        🟠 **10–20% flags** — Problematic  
+        🔴 **>20% flags** — Poor quality  
+
+        **Processing Workflow**
+
+        1. Raw data ingestion  
+        2. Multi-tier QC checks  
+        3. Flag classification  
+        4. Decision matrix application  
+        5. Final validation  
+        """)
+
+
+#st.set_page_config(
+#    page_title="Advanced Temperature QC",
+#    page_icon="🌡️",
+#    layout="wide"
+#)
+
+#st.title("🌡️ Advanced Temperature QC with Silver Labels")
+#st.write(
+#    """
+#A Streamlit interface for NOAA hourly temperature QA/QC using:
+#- climatology-aware rules
+#- spatial neighbor checks
+#- silver labels
+#- optional supervised machine learning
+#"""
+#)
 
 # -----------------------------------------------------------------------------
 # Cached metadata loader for UI
