@@ -102,19 +102,19 @@ with col2:
     year_r = st.slider("Year:", 2018, 2025, 2023, key="y2")
 
 # ---------------------------------------------------------
-# PERFORMANCE TOGGLE
+# PERFORMANCE TOGGLE, I am turning it off and include fast_mode = False
 # ---------------------------------------------------------
-with st.expander("⚡ Performance", expanded=False):
-    fast_mode = st.toggle(
-        "Fast mode (shared fixed tile range + dynamic shared legends)",
-        value=True,
-        help=(
-            "Fast mode keeps map tiles responsive using broad preset ranges, "
-            "while the left/right legends are still computed dynamically from "
-            "Earth Engine percentiles using a shared range across both selected periods."
-        )
-    )
-
+#with st.expander("⚡ Performance", expanded=False):
+#    fast_mode = st.toggle(
+#        "Fast mode (shared fixed tile range + dynamic shared legends)",
+#        value=True,
+#        help=(
+#            "Fast mode keeps map tiles responsive using broad preset ranges, "
+#            "while the left/right legends are still computed dynamically from "
+#            "Earth Engine percentiles using a shared range across both selected periods."
+#        )
+#    )
+fast_mode = False
 # ---------------------------------------------------------
 # OPACITY SLIDER
 # ---------------------------------------------------------
