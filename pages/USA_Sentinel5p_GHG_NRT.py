@@ -25,6 +25,12 @@ st.header("Timeframe Comparison of Atmospheric Gases over the United States", di
 st.write("""
 This application enables users to visually compare atmospheric gas concentrations from Sentinel-5P over the United States
 for two selected timeframes using a side-by-side interface, with a dynamic difference map showing changes (Right − Left).
+
+**Recommended comparison mode used here**
+- Left and right panels use one **shared color range**
+- That shared range is derived from the two selected periods together
+- This makes the two maps directly comparable
+- The difference map keeps its own separate symmetric blue-white-red scale
 """)
 
 # ---------------------------------------------------------
@@ -100,11 +106,12 @@ with col2:
 # ---------------------------------------------------------
 with st.expander("⚡ Performance", expanded=False):
     fast_mode = st.toggle(
-        "Fast mode (broad tile rendering + dynamic percentile legends)",
+        "Fast mode (shared fixed tile range + dynamic shared legends)",
         value=True,
         help=(
             "Fast mode keeps map tiles responsive using broad preset ranges, "
-            "while legends are still computed dynamically from Earth Engine percentiles."
+            "while the left/right legends are still computed dynamically from "
+            "Earth Engine percentiles using a shared range across both selected periods."
         )
     )
 
@@ -163,7 +170,7 @@ gas_dict = {
 # ---------------------------------------------------------
 # PRESET TILE VIS RANGES
 # Used only for fast tile rendering.
-# Legends are dynamic from percentile reduceRegion.
+# Shared legends remain dynamic.
 # ---------------------------------------------------------
 FAST_RANGES = {
     "CO_column_number_density": (0.02, 0.05),
@@ -225,7 +232,7 @@ def add_html_legend(map_obj, title, vmin, vmax, colors, position="bottomleft"):
         padding: 10px 12px;
         font-size: 12px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-        min-width: 220px;
+        min-width: 240px;
     ">
         <div style="font-weight: 700; margin-bottom: 8px; line-height: 1.2;">
             {title}
@@ -408,7 +415,7 @@ def compute_tiles_and_meta(
     fallback_min, fallback_max = FAST_RANGES.get(band, (0.0, 1.0))
     fallback_diff = max((fallback_max - fallback_min) * 0.3, 1e-6)
 
-    # Dynamic legend ranges from Earth Engine percentiles
+    # Dynamic percentile ranges for each selected period
     left_leg_min, left_leg_max = get_percentile_range(
         img_left, band, (fallback_min, fallback_max),
         p_low=2, p_high=98,
@@ -419,6 +426,12 @@ def compute_tiles_and_meta(
         p_low=2, p_high=98,
         scale=80000 if fast_mode else 50000
     )
+
+    # Shared range for direct comparison between left and right panels
+    shared_leg_min = min(left_leg_min, right_leg_min)
+    shared_leg_max = max(left_leg_max, right_leg_max)
+
+    # Difference range stays separate and symmetric
     diff_leg_min, diff_leg_max = get_percentile_diff_range(
         img_diff, band, fallback_diff,
         p_low=2, p_high=98,
@@ -427,13 +440,16 @@ def compute_tiles_and_meta(
 
     # Tile rendering ranges
     if fast_mode:
-        left_tile_min, left_tile_max = fallback_min, fallback_max
-        right_tile_min, right_tile_max = fallback_min, fallback_max
+        # Fast mode uses broad fixed render ranges for responsiveness
+        shared_tile_min, shared_tile_max = fallback_min, fallback_max
         diff_tile_min, diff_tile_max = -fallback_diff, fallback_diff
     else:
-        left_tile_min, left_tile_max = left_leg_min, left_leg_max
-        right_tile_min, right_tile_max = right_leg_min, right_leg_max
+        # Precise mode uses the dynamic shared range for both panels
+        shared_tile_min, shared_tile_max = shared_leg_min, shared_leg_max
         diff_tile_min, diff_tile_max = diff_leg_min, diff_leg_max
+
+    left_tile_min, left_tile_max = shared_tile_min, shared_tile_max
+    right_tile_min, right_tile_max = shared_tile_min, shared_tile_max
 
     viz_left = {
         "min": left_tile_min,
@@ -462,11 +478,17 @@ def compute_tiles_and_meta(
         "right_tiles": right_tiles,
         "diff_tiles": diff_tiles,
 
-        # dynamic legend ranges
+        # individual dynamic ranges
         "left_min": left_leg_min,
         "left_max": left_leg_max,
         "right_min": right_leg_min,
         "right_max": right_leg_max,
+
+        # shared left/right comparison range
+        "shared_min": shared_leg_min,
+        "shared_max": shared_leg_max,
+
+        # difference range
         "diff_min": diff_leg_min,
         "diff_max": diff_leg_max,
 
@@ -488,7 +510,7 @@ def compute_tiles_and_meta(
 # MAIN COMPUTATION
 # ---------------------------------------------------------
 try:
-    with st.spinner("Preparing map layers and dynamic legends..."):
+    with st.spinner("Preparing map layers and shared comparison legends..."):
         meta = compute_tiles_and_meta(
             gas,
             year_l, month_dict[month_l],
@@ -499,17 +521,22 @@ try:
     with st.expander("🔍 Data Validation", expanded=True):
         st.write("### Panel Statistics")
 
-        st.write(f"**Left panel ({month_l} {year_l})**")
-        st.write(f"- Dynamic legend range: {meta['left_min']:.6f} to {meta['left_max']:.6f}")
-        st.write(f"- Tile render range: {meta['left_tile_min']:.6f} to {meta['left_tile_max']:.6f}")
+        st.write(f"**Left panel ({month_l} {year_l}) raw dynamic range**")
+        st.write(f"- {meta['left_min']:.6f} to {meta['left_max']:.6f}")
 
-        st.write(f"**Right panel ({month_r} {year_r})**")
-        st.write(f"- Dynamic legend range: {meta['right_min']:.6f} to {meta['right_max']:.6f}")
-        st.write(f"- Tile render range: {meta['right_tile_min']:.6f} to {meta['right_tile_max']:.6f}")
+        st.write(f"**Right panel ({month_r} {year_r}) raw dynamic range**")
+        st.write(f"- {meta['right_min']:.6f} to {meta['right_max']:.6f}")
 
-        st.write("**Difference map**")
-        st.write(f"- Dynamic legend range: {meta['diff_min']:.6f} to {meta['diff_max']:.6f}")
-        st.write(f"- Tile render range: {meta['diff_tile_min']:.6f} to {meta['diff_tile_max']:.6f}")
+        st.write("**Shared comparison range used for BOTH left and right panels**")
+        st.write(f"- {meta['shared_min']:.6f} to {meta['shared_max']:.6f}")
+
+        st.write("**Difference map range**")
+        st.write(f"- {meta['diff_min']:.6f} to {meta['diff_max']:.6f}")
+
+        st.write("**Tile rendering range used in the maps**")
+        st.write(f"- Left: {meta['left_tile_min']:.6f} to {meta['left_tile_max']:.6f}")
+        st.write(f"- Right: {meta['right_tile_min']:.6f} to {meta['right_tile_max']:.6f}")
+        st.write(f"- Difference: {meta['diff_tile_min']:.6f} to {meta['diff_tile_max']:.6f}")
 
         if meta["diff_min"] < 0 and meta["diff_max"] > 0:
             st.success("✅ Difference legend captures both increases and decreases")
@@ -705,9 +732,9 @@ with map_col1:
 
     add_html_legend(
         left_map,
-        title=f"{gas}<br>{month_l} {year_l} ({unit})",
-        vmin=meta["left_min"],
-        vmax=meta["left_max"],
+        title=f"{gas}<br>{month_l} {year_l} ({unit})<br><span style='font-weight:400;'>Shared comparison scale</span>",
+        vmin=meta["shared_min"],
+        vmax=meta["shared_max"],
         colors=SHARED_PALETTE,
         position="bottomleft"
     )
@@ -734,9 +761,9 @@ with map_col2:
 
     add_html_legend(
         right_map,
-        title=f"{gas}<br>{month_r} {year_r} ({unit})",
-        vmin=meta["right_min"],
-        vmax=meta["right_max"],
+        title=f"{gas}<br>{month_r} {year_r} ({unit})<br><span style='font-weight:400;'>Shared comparison scale</span>",
+        vmin=meta["shared_min"],
+        vmax=meta["shared_max"],
         colors=SHARED_PALETTE,
         position="bottomright"
     )
@@ -795,10 +822,15 @@ with st.expander("📊 Data Quality Notes", expanded=False):
 - Left panel stream: `{stream_left}`
 - Right panel stream: `{stream_right}`
 
-**Legend behavior**
-- Legends are dynamic and recalculated from Earth Engine percentiles for each selected month/year
-- In Fast mode, only tile rendering stays broad and fixed for speed
-- In Precise mode, both tile rendering and legends are dynamic
+**Left vs Right comparison**
+- The left and right panels use one **shared color scale**
+- That shared scale is based on the combined percentile range from the two selected periods
+- This makes visual comparison between the two panels much more scientifically consistent
+
+**Fast mode**
+- In Fast mode, tile rendering uses a broad fixed range for speed
+- The displayed left/right legends still use the dynamic shared range
+- In Precise mode, both tile rendering and the legends use the dynamic shared range
 
 **Difference map**
 - Shows absolute difference: **Right panel − Left panel**
