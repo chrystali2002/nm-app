@@ -22,6 +22,10 @@ st.image("https://github.com/chrystali2002.png", width=100)
 st.header("Timeframe Comparison of Atmospheric Gases over Africa or Any African Country", divider="rainbow")
 
 st.write("""
+This dataset provides near real-time high-resolution imagery of UV Aerosol Index, concentrations of Carbon monoxide (CO), water vapor, and Formaldehyde. 
+Other important greenhouse gases such as the total, tropospheric, and stratospheric nitrogen dioxide (NO₂), total atmospheric column ozone (O₃), atmospheric sulphur dioxide (SO₂), and atmospheric methane (CH₄) are included in this application for visualization.
+
+The source of this dataset is obtained from the Earth Engine Data Catalog (Sentinel‑5P) , and the details of these individual gases are available in the catalog.
 This application enables users to visually compare atmospheric gas concentrations from Sentinel-5P
 for **all Africa** or any selected **African country** across two selected timeframes.
 
