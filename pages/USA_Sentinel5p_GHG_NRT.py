@@ -1,4 +1,3 @@
-#NEW
 import ee
 import json
 import streamlit as st
@@ -82,7 +81,6 @@ month_dict = {
     "May": 5, "June": 6, "July": 7, "August": 8,
     "September": 9, "October": 10, "November": 11, "December": 12
 }
-
 month_names = list(month_dict.keys())
 
 col1, col2 = st.columns(2)
@@ -102,9 +100,12 @@ with col2:
 # ---------------------------------------------------------
 with st.expander("⚡ Performance", expanded=False):
     fast_mode = st.toggle(
-        "Fast mode (no dynamic stats; instant reruns)",
+        "Fast mode (fast tiles + dynamic sampled legends)",
         value=True,
-        help="Fast mode avoids reduceRegion/getInfo. Precise mode computes min/max using Earth Engine sampling (slower on first run, cached thereafter)."
+        help=(
+            "Fast mode keeps map tiles responsive by using broad visualization ranges, "
+            "but legends are still computed dynamically from lightweight pixel samples."
+        )
     )
 
 # ---------------------------------------------------------
@@ -113,7 +114,7 @@ with st.expander("⚡ Performance", expanded=False):
 opacity = st.slider("Overlay Opacity", 0.1, 1.0, 0.8)
 
 # ---------------------------------------------------------
-# GAS CONFIG with Units
+# GAS CONFIG
 # ---------------------------------------------------------
 gas_dict = {
     "Concentrations of Carbon monoxide (CO)": {
@@ -160,7 +161,9 @@ gas_dict = {
 }
 
 # ---------------------------------------------------------
-# FAST MODE VIS RANGES
+# TILE VIS RANGES
+# These are used for fast tile rendering only.
+# Legends are computed dynamically from sampled data.
 # ---------------------------------------------------------
 FAST_RANGES = {
     "CO_column_number_density": (0.02, 0.05),
@@ -177,10 +180,12 @@ SHARED_PALETTE = ["black", "blue", "purple", "cyan", "green", "yellow", "red"]
 DIFF_PALETTE = ["blue", "white", "red"]
 
 # ---------------------------------------------------------
-# LEGEND HELPERS
+# HELPERS
 # ---------------------------------------------------------
 def fmt_tick(x):
-    if x is None or np.isnan(x) or np.isinf(x):
+    if x is None:
+        return "0"
+    if isinstance(x, float) and (np.isnan(x) or np.isinf(x)):
         return "0"
     if abs(x) >= 1000:
         return f"{x:,.0f}"
@@ -192,10 +197,6 @@ def fmt_tick(x):
 
 
 def add_html_legend(map_obj, title, vmin, vmax, colors, position="bottomleft"):
-    """
-    Add a custom HTML legend directly inside a Folium map.
-    This avoids all legends sharing the same generic Leaflet CSS class.
-    """
     pos_styles = {
         "bottomleft": "bottom: 25px; left: 25px;",
         "bottomright": "bottom: 25px; right: 25px;",
@@ -204,7 +205,6 @@ def add_html_legend(map_obj, title, vmin, vmax, colors, position="bottomleft"):
         "topleft": "top: 25px; left: 25px;"
     }
     style_pos = pos_styles.get(position, pos_styles["bottomleft"])
-
     gradient = ", ".join(colors)
     mid = (vmin + vmax) / 2
 
@@ -220,7 +220,7 @@ def add_html_legend(map_obj, title, vmin, vmax, colors, position="bottomleft"):
         padding: 10px 12px;
         font-size: 12px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-        min-width: 210px;
+        min-width: 220px;
     ">
         <div style="font-weight: 700; margin-bottom: 8px; line-height: 1.2;">
             {title}
@@ -252,9 +252,6 @@ def add_html_legend(map_obj, title, vmin, vmax, colors, position="bottomleft"):
     map_obj.get_root().add_child(macro)
 
 
-# ---------------------------------------------------------
-# DATE HANDLING
-# ---------------------------------------------------------
 def ee_month_range(year, month):
     start = ee.Date.fromYMD(year, month, 1)
     end = start.advance(1, "month")
@@ -280,9 +277,48 @@ def choose_co_stream(year, month):
     days_ago = (date.today() - end).days
     return "NRTI" if days_ago < 14 else "OFFL"
 
-# ---------------------------------------------------------
-# EARTH ENGINE HELPERS
-# ---------------------------------------------------------
+
+def robust_buffered_range(values, fallback):
+    """
+    Use robust percentile range to avoid outliers controlling the legend.
+    """
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size < 10:
+        return fallback
+
+    p02 = np.percentile(vals, 2)
+    p98 = np.percentile(vals, 98)
+
+    if not np.isfinite(p02) or not np.isfinite(p98):
+        return fallback
+
+    if p02 == p98:
+        center = p02
+        eps = max(abs(center) * 0.05, 1e-6)
+        return center - eps, center + eps
+
+    pad = 0.05 * (p98 - p02)
+    return float(p02 - pad), float(p98 + pad)
+
+
+def robust_symmetric_diff_range(values, fallback):
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size < 10:
+        return (-fallback, fallback)
+
+    p02 = np.percentile(vals, 2)
+    p98 = np.percentile(vals, 98)
+    max_abs = max(abs(p02), abs(p98))
+
+    if not np.isfinite(max_abs) or max_abs <= 0:
+        return (-fallback, fallback)
+
+    max_abs *= 1.05
+    return (-float(max_abs), float(max_abs))
+
+
 def build_image(gas_key, year, month):
     start, end = ee_month_range(year, month)
     cfg = gas_dict[gas_key]
@@ -313,40 +349,43 @@ def build_image(gas_key, year, month):
     return img, stream, col_id
 
 
-def get_dynamic_range_simple(img, band):
+def sample_image_values(img, band, num_pixels=800, scale=100000):
+    """
+    Lightweight sampling for dynamic legends.
+    """
     try:
-        sample = img.sample(
+        samples = img.sample(
             region=usa,
-            scale=100000,
-            numPixels=1000,
-            seed=0,
-            geometries=True
-        )
+            scale=scale,
+            numPixels=num_pixels,
+            seed=42,
+            geometries=False
+        ).aggregate_array(band).getInfo()
 
-        stats = sample.aggregate_stats(band)
-        min_val = stats.get("min").getInfo()
-        max_val = stats.get("max").getInfo()
+        if samples is None:
+            return np.array([], dtype=float)
 
-        if min_val is None or max_val is None or np.isnan(min_val) or np.isnan(max_val):
-            return FAST_RANGES.get(band, (0.0, 1.0))
+        vals = []
+        for x in samples:
+            if x is None:
+                continue
+            try:
+                fx = float(x)
+                if np.isfinite(fx):
+                    vals.append(fx)
+            except Exception:
+                pass
 
-        range_val = max_val - min_val
-        min_val = min_val - 0.05 * range_val
-        max_val = max_val + 0.05 * range_val
+        return np.array(vals, dtype=float)
 
-        return float(min_val), float(max_val)
+    except Exception:
+        return np.array([], dtype=float)
 
-    except Exception as e:
-        st.warning(f"Could not compute dynamic range, using defaults: {str(e)}")
-        return FAST_RANGES.get(band, (0.0, 1.0))
 
-# ---------------------------------------------------------
-# CACHED EE PIPELINE WITH RETRY LOGIC
-# ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
+    wait=wait_exponential(multiplier=1, min=2, max=8),
     retry=retry_if_exception_type(Exception)
 )
 def compute_tiles_and_meta(
@@ -358,127 +397,108 @@ def compute_tiles_and_meta(
     band = gas_dict[gas_key]["band"]
     unit = gas_dict[gas_key]["unit"]
 
-    try:
-        img_left, stream_left, col_left = build_image(gas_key, year_l, month_l_num)
-        img_right, stream_right, col_right = build_image(gas_key, year_r, month_r_num)
+    img_left, stream_left, col_left = build_image(gas_key, year_l, month_l_num)
+    img_right, stream_right, col_right = build_image(gas_key, year_r, month_r_num)
+    img_diff = img_right.subtract(img_left).rename(band)
 
-        if fast_mode:
-            left_min, left_max = FAST_RANGES.get(band, (0.0, 1.0))
-            right_min, right_max = FAST_RANGES.get(band, (0.0, 1.0))
-        else:
-            left_min, left_max = get_dynamic_range_simple(img_left, band)
-            right_min, right_max = get_dynamic_range_simple(img_right, band)
+    # -----------------------------------------------------
+    # Fast mode:
+    #   - tiles use broad fixed ranges for responsiveness
+    #   - legends still use lightweight dynamic sampled ranges
+    # Precise mode:
+    #   - both tiles and legends use dynamic sampled ranges
+    # -----------------------------------------------------
+    fallback_min, fallback_max = FAST_RANGES.get(band, (0.0, 1.0))
+    fallback_diff = max((fallback_max - fallback_min) * 0.3, 1e-6)
 
-        img_diff = img_right.subtract(img_left).rename(band)
+    # Dynamic legend ranges from sample values
+    left_vals = sample_image_values(
+        img_left, band,
+        num_pixels=600 if fast_mode else 1200,
+        scale=120000 if fast_mode else 80000
+    )
+    right_vals = sample_image_values(
+        img_right, band,
+        num_pixels=600 if fast_mode else 1200,
+        scale=120000 if fast_mode else 80000
+    )
+    diff_vals = sample_image_values(
+        img_diff, band,
+        num_pixels=600 if fast_mode else 1200,
+        scale=120000 if fast_mode else 80000
+    )
 
-        if fast_mode:
-            data_range = (left_max - left_min + right_max - right_min) / 2
-            max_abs = data_range * 0.3
-        else:
-            try:
-                sample = img_diff.sample(
-                    region=usa,
-                    scale=100000,
-                    numPixels=1000,
-                    seed=0
-                )
-                stats = sample.aggregate_stats(band)
-                min_val = stats.get("min").getInfo()
-                max_val = stats.get("max").getInfo()
+    left_leg_min, left_leg_max = robust_buffered_range(left_vals, (fallback_min, fallback_max))
+    right_leg_min, right_leg_max = robust_buffered_range(right_vals, (fallback_min, fallback_max))
+    diff_leg_min, diff_leg_max = robust_symmetric_diff_range(diff_vals, fallback_diff)
 
-                if min_val is not None and max_val is not None:
-                    if not (np.isnan(min_val) or np.isnan(max_val)):
-                        max_abs = max(abs(min_val), abs(max_val)) * 1.1
-                    else:
-                        data_range = (left_max - left_min + right_max - right_min) / 2
-                        max_abs = data_range * 0.3
-                else:
-                    data_range = (left_max - left_min + right_max - right_min) / 2
-                    max_abs = data_range * 0.3
-            except Exception:
-                data_range = (left_max - left_min + right_max - right_min) / 2
-                max_abs = data_range * 0.3
+    # Tile ranges
+    if fast_mode:
+        left_tile_min, left_tile_max = fallback_min, fallback_max
+        right_tile_min, right_tile_max = fallback_min, fallback_max
+        diff_tile_min, diff_tile_max = -fallback_diff, fallback_diff
+    else:
+        left_tile_min, left_tile_max = left_leg_min, left_leg_max
+        right_tile_min, right_tile_max = right_leg_min, right_leg_max
+        diff_tile_min, diff_tile_max = diff_leg_min, diff_leg_max
 
-        max_abs = max(max_abs, 1e-6)
+    viz_left = {
+        "min": left_tile_min,
+        "max": left_tile_max,
+        "palette": SHARED_PALETTE,
+    }
+    viz_right = {
+        "min": right_tile_min,
+        "max": right_tile_max,
+        "palette": SHARED_PALETTE,
+    }
+    viz_diff = {
+        "min": diff_tile_min,
+        "max": diff_tile_max,
+        "palette": DIFF_PALETTE,
+    }
 
-        shared_min = min(left_min, right_min)
-        shared_max = max(left_max, right_max)
+    left_tiles = img_left.getMapId(viz_left)["tile_fetcher"].url_format
+    right_tiles = img_right.getMapId(viz_right)["tile_fetcher"].url_format
+    diff_tiles = img_diff.getMapId(viz_diff)["tile_fetcher"].url_format
 
-        viz_left = {
-            "min": left_min,
-            "max": left_max,
-            "palette": SHARED_PALETTE,
-        }
-        viz_right = {
-            "min": right_min,
-            "max": right_max,
-            "palette": SHARED_PALETTE,
-        }
-        viz_diff = {
-            "min": -max_abs,
-            "max": max_abs,
-            "palette": DIFF_PALETTE,
-        }
+    return {
+        "band": band,
+        "unit": unit,
+        "left_tiles": left_tiles,
+        "right_tiles": right_tiles,
+        "diff_tiles": diff_tiles,
 
-        left_tiles = img_left.getMapId(viz_left)["tile_fetcher"].url_format
-        right_tiles = img_right.getMapId(viz_right)["tile_fetcher"].url_format
-        diff_tiles = img_diff.getMapId(viz_diff)["tile_fetcher"].url_format
+        # dynamic legend ranges
+        "left_min": left_leg_min,
+        "left_max": left_leg_max,
+        "right_min": right_leg_min,
+        "right_max": right_leg_max,
+        "diff_min": diff_leg_min,
+        "diff_max": diff_leg_max,
 
-        return {
-            "band": band,
-            "unit": unit,
-            "left_tiles": left_tiles,
-            "right_tiles": right_tiles,
-            "diff_tiles": diff_tiles,
-            "left_min": left_min,
-            "left_max": left_max,
-            "right_min": right_min,
-            "right_max": right_max,
-            "shared_min": shared_min,
-            "shared_max": shared_max,
-            "diff_min": -max_abs,
-            "diff_max": max_abs,
-            "stream_left": stream_left,
-            "stream_right": stream_right,
-            "col_left": col_left,
-            "col_right": col_right
-        }
+        # tile ranges for transparency/debugging
+        "left_tile_min": left_tile_min,
+        "left_tile_max": left_tile_max,
+        "right_tile_min": right_tile_min,
+        "right_tile_max": right_tile_max,
+        "diff_tile_min": diff_tile_min,
+        "diff_tile_max": diff_tile_max,
 
-    except Exception as e:
-        st.error(f"Error in compute_tiles_and_meta: {str(e)}")
-
-        fallback_min, fallback_max = FAST_RANGES.get(band, (0.0, 1.0))
-        fallback_diff_range = (fallback_max - fallback_min) * 0.3
-
-        fallback_img = ee.Image.constant(0).rename(band).clip(usa)
-        fallback_viz = {"min": 0, "max": 1, "palette": ["gray"]}
-        fallback_tiles = fallback_img.getMapId(fallback_viz)["tile_fetcher"].url_format
-
-        return {
-            "band": band,
-            "unit": unit,
-            "left_tiles": fallback_tiles,
-            "right_tiles": fallback_tiles,
-            "diff_tiles": fallback_tiles,
-            "left_min": fallback_min,
-            "left_max": fallback_max,
-            "right_min": fallback_min,
-            "right_max": fallback_max,
-            "shared_min": fallback_min,
-            "shared_max": fallback_max,
-            "diff_min": -fallback_diff_range,
-            "diff_max": fallback_diff_range,
-            "stream_left": "FALLBACK",
-            "stream_right": "FALLBACK",
-            "col_left": "FALLBACK",
-            "col_right": "FALLBACK"
-        }
+        "stream_left": stream_left,
+        "stream_right": stream_right,
+        "col_left": col_left,
+        "col_right": col_right,
+        "n_left_samples": int(left_vals.size),
+        "n_right_samples": int(right_vals.size),
+        "n_diff_samples": int(diff_vals.size),
+    }
 
 # ---------------------------------------------------------
 # MAIN COMPUTATION
 # ---------------------------------------------------------
 try:
-    with st.spinner("Preparing map layers (this may take a moment)..."):
+    with st.spinner("Preparing map layers and dynamic legends..."):
         meta = compute_tiles_and_meta(
             gas,
             year_l, month_dict[month_l],
@@ -486,33 +506,34 @@ try:
             fast_mode
         )
 
-    # ===== DEBUG SECTION =====
     with st.expander("🔍 Data Validation", expanded=True):
         st.write("### Panel Statistics")
-        st.write("Available keys in meta:", list(meta.keys()))
 
-        if "left_min" in meta and "left_max" in meta:
-            st.write(f"**Left Panel ({month_l} {year_l}):**")
-            st.write(f"  - Overall Range: {meta['left_min']:.6f} to {meta['left_max']:.6f}")
+        st.write(f"**Left panel ({month_l} {year_l})**")
+        st.write(f"- Dynamic legend range: {meta['left_min']:.6f} to {meta['left_max']:.6f}")
+        st.write(f"- Tile render range: {meta['left_tile_min']:.6f} to {meta['left_tile_max']:.6f}")
+        st.write(f"- Sample count used: {meta['n_left_samples']}")
 
-        if "right_min" in meta and "right_max" in meta:
-            st.write(f"**Right Panel ({month_r} {year_r}):**")
-            st.write(f"  - Overall Range: {meta['right_min']:.6f} to {meta['right_max']:.6f}")
+        st.write(f"**Right panel ({month_r} {year_r})**")
+        st.write(f"- Dynamic legend range: {meta['right_min']:.6f} to {meta['right_max']:.6f}")
+        st.write(f"- Tile render range: {meta['right_tile_min']:.6f} to {meta['right_tile_max']:.6f}")
+        st.write(f"- Sample count used: {meta['n_right_samples']}")
 
-        if "diff_min" in meta and "diff_max" in meta:
-            st.write(f"**Difference Map Range:** {meta['diff_min']:.6f} to {meta['diff_max']:.6f}")
+        st.write("**Difference map**")
+        st.write(f"- Dynamic legend range: {meta['diff_min']:.6f} to {meta['diff_max']:.6f}")
+        st.write(f"- Tile render range: {meta['diff_tile_min']:.6f} to {meta['diff_tile_max']:.6f}")
+        st.write(f"- Sample count used: {meta['n_diff_samples']}")
 
-            if meta["diff_min"] < 0 and meta["diff_max"] > 0:
-                st.success("✅ Difference map shows BOTH increases and decreases")
-            elif meta["diff_min"] >= 0:
-                st.warning("⚠️ Difference map shows ONLY increases (all values >= 0)")
-            elif meta["diff_max"] <= 0:
-                st.warning("⚠️ Difference map shows ONLY decreases (all values <= 0)")
+        if meta["diff_min"] < 0 and meta["diff_max"] > 0:
+            st.success("✅ Difference legend captures both increases and decreases")
+        elif meta["diff_min"] >= 0:
+            st.warning("⚠️ Difference legend suggests only increases")
+        elif meta["diff_max"] <= 0:
+            st.warning("⚠️ Difference legend suggests only decreases")
 
-    # ===== PIXEL-BY-PIXEL ANALYSIS =====
     if not fast_mode:
         with st.expander("📊 Pixel-by-Pixel Analysis", expanded=True):
-            with st.spinner("Analyzing pixel-by-pixel variations..."):
+            with st.spinner("Analyzing pixel-level variations..."):
                 try:
                     unit = meta["unit"]
                     band = meta["band"]
@@ -524,7 +545,6 @@ try:
                     img_left_renamed = img_left.rename(band + "_left")
                     img_right_renamed = img_right.rename(band + "_right")
                     img_diff_renamed = img_diff.rename(band + "_diff")
-
                     combined = img_left_renamed.addBands(img_right_renamed).addBands(img_diff_renamed)
 
                     samples = combined.sample(
@@ -537,220 +557,170 @@ try:
 
                     sample_list = samples.getInfo()["features"]
 
-                    if len(sample_list) > 0:
-                        left_values = []
-                        right_values = []
-                        diff_values = []
-                        coords = []
+                    left_values = []
+                    right_values = []
+                    diff_values = []
+                    coords = []
 
-                        for sample in sample_list:
-                            props = sample["properties"]
-                            geom = sample["geometry"]["coordinates"]
+                    for sample in sample_list:
+                        props = sample["properties"]
+                        geom = sample["geometry"]["coordinates"]
 
-                            left_val = props.get(band + "_left")
-                            right_val = props.get(band + "_right")
-                            diff_val = props.get(band + "_diff")
+                        left_val = props.get(band + "_left")
+                        right_val = props.get(band + "_right")
+                        diff_val = props.get(band + "_diff")
 
-                            if (
-                                left_val is not None and right_val is not None and diff_val is not None
-                                and not np.isnan(left_val)
-                                and not np.isnan(right_val)
-                                and not np.isnan(diff_val)
-                            ):
-                                left_values.append(left_val)
-                                right_values.append(right_val)
-                                diff_values.append(diff_val)
-                                coords.append(geom)
+                        if (
+                            left_val is not None and right_val is not None and diff_val is not None
+                            and not np.isnan(left_val)
+                            and not np.isnan(right_val)
+                            and not np.isnan(diff_val)
+                        ):
+                            left_values.append(left_val)
+                            right_values.append(right_val)
+                            diff_values.append(diff_val)
+                            coords.append(geom)
 
-                        left_values = np.array(left_values)
-                        right_values = np.array(right_values)
-                        diff_values = np.array(diff_values)
+                    left_values = np.array(left_values)
+                    right_values = np.array(right_values)
+                    diff_values = np.array(diff_values)
 
-                        if len(diff_values) > 0:
-                            st.write(f"### Analysis of {len(diff_values)} random pixels")
+                    if len(diff_values) > 0:
+                        st.write(f"### Analysis of {len(diff_values)} random pixels")
 
-                            stat_col1, stat_col2, stat_col3 = st.columns(3)
+                        stat_col1, stat_col2, stat_col3 = st.columns(3)
 
-                            with stat_col1:
-                                st.write(f"**Left Panel ({month_l} {year_l})**")
-                                st.write(f"Mean: {np.mean(left_values):.6f}")
-                                st.write(f"StdDev: {np.std(left_values):.6f}")
-                                st.write(f"Min: {np.min(left_values):.6f}")
-                                st.write(f"Max: {np.max(left_values):.6f}")
+                        with stat_col1:
+                            st.write(f"**Left Panel ({month_l} {year_l})**")
+                            st.write(f"Mean: {np.mean(left_values):.6f}")
+                            st.write(f"StdDev: {np.std(left_values):.6f}")
+                            st.write(f"Min: {np.min(left_values):.6f}")
+                            st.write(f"Max: {np.max(left_values):.6f}")
 
-                            with stat_col2:
-                                st.write(f"**Right Panel ({month_r} {year_r})**")
-                                st.write(f"Mean: {np.mean(right_values):.6f}")
-                                st.write(f"StdDev: {np.std(right_values):.6f}")
-                                st.write(f"Min: {np.min(right_values):.6f}")
-                                st.write(f"Max: {np.max(right_values):.6f}")
+                        with stat_col2:
+                            st.write(f"**Right Panel ({month_r} {year_r})**")
+                            st.write(f"Mean: {np.mean(right_values):.6f}")
+                            st.write(f"StdDev: {np.std(right_values):.6f}")
+                            st.write(f"Min: {np.min(right_values):.6f}")
+                            st.write(f"Max: {np.max(right_values):.6f}")
 
-                            with stat_col3:
-                                st.write(f"**Difference ({month_r} {year_r} - {month_l} {year_l})**")
-                                st.write(f"Mean: {np.mean(diff_values):.6f}")
-                                st.write(f"StdDev: {np.std(diff_values):.6f}")
-                                st.write(f"Min: {np.min(diff_values):.6f}")
-                                st.write(f"Max: {np.max(diff_values):.6f}")
+                        with stat_col3:
+                            st.write(f"**Difference ({month_r} {year_r} - {month_l} {year_l})**")
+                            st.write(f"Mean: {np.mean(diff_values):.6f}")
+                            st.write(f"StdDev: {np.std(diff_values):.6f}")
+                            st.write(f"Min: {np.min(diff_values):.6f}")
+                            st.write(f"Max: {np.max(diff_values):.6f}")
 
-                            n_increase = np.sum(diff_values > 0.0001)
-                            n_decrease = np.sum(diff_values < -0.0001)
-                            n_nochange = np.sum(np.abs(diff_values) <= 0.0001)
+                        n_increase = np.sum(diff_values > 0.0001)
+                        n_decrease = np.sum(diff_values < -0.0001)
+                        n_nochange = np.sum(np.abs(diff_values) <= 0.0001)
 
-                            st.write("### Pixel-by-Pixel Changes")
+                        st.write("### Pixel-by-Pixel Changes")
 
-                            col_inc, col_dec, col_nc = st.columns(3)
-                            with col_inc:
-                                st.markdown(
-                                    f"<h3 style='color: red; text-align: center;'>{n_increase}</h3>",
-                                    unsafe_allow_html=True
-                                )
-                                st.markdown(
-                                    f"<p style='text-align: center;'>INCREASES 🔴<br>({n_increase/len(diff_values)*100:.1f}%)</p>",
-                                    unsafe_allow_html=True
-                                )
-
-                            with col_dec:
-                                st.markdown(
-                                    f"<h3 style='color: blue; text-align: center;'>{n_decrease}</h3>",
-                                    unsafe_allow_html=True
-                                )
-                                st.markdown(
-                                    f"<p style='text-align: center;'>DECREASES 🔵<br>({n_decrease/len(diff_values)*100:.1f}%)</p>",
-                                    unsafe_allow_html=True
-                                )
-
-                            with col_nc:
-                                st.markdown(
-                                    f"<h3 style='color: gray; text-align: center;'>{n_nochange}</h3>",
-                                    unsafe_allow_html=True
-                                )
-                                st.markdown(
-                                    f"<p style='text-align: center;'>NO CHANGE ⚪<br>({n_nochange/len(diff_values)*100:.1f}%)</p>",
-                                    unsafe_allow_html=True
-                                )
-
-                            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-
-                            scatter = axes[0, 0].scatter(
-                                left_values, right_values, alpha=0.5, s=10, c=diff_values, cmap="RdBu_r"
+                        col_inc, col_dec, col_nc = st.columns(3)
+                        with col_inc:
+                            st.markdown(
+                                f"<h3 style='color: red; text-align: center;'>{n_increase}</h3>",
+                                unsafe_allow_html=True
+                            )
+                            st.markdown(
+                                f"<p style='text-align: center;'>INCREASES 🔴<br>({n_increase/len(diff_values)*100:.1f}%)</p>",
+                                unsafe_allow_html=True
                             )
 
-                            min_val = min(left_values.min(), right_values.min())
-                            max_val = max(left_values.max(), right_values.max())
-                            axes[0, 0].plot(
-                                [min_val, max_val], [min_val, max_val],
-                                "k--", label="1:1 line", alpha=0.5
+                        with col_dec:
+                            st.markdown(
+                                f"<h3 style='color: blue; text-align: center;'>{n_decrease}</h3>",
+                                unsafe_allow_html=True
+                            )
+                            st.markdown(
+                                f"<p style='text-align: center;'>DECREASES 🔵<br>({n_decrease/len(diff_values)*100:.1f}%)</p>",
+                                unsafe_allow_html=True
                             )
 
-                            axes[0, 0].set_xlabel(f"{month_l} {year_l} Values ({unit})")
-                            axes[0, 0].set_ylabel(f"{month_r} {year_r} Values ({unit})")
-                            axes[0, 0].set_title("Pixel-by-Pixel Comparison")
-                            axes[0, 0].legend()
-                            axes[0, 0].grid(True, alpha=0.3)
-                            plt.colorbar(scatter, ax=axes[0, 0], label=f"Difference ({unit})")
-
-                            axes[0, 1].hist(diff_values, bins=30, color="gray", edgecolor="black", alpha=0.7)
-                            axes[0, 1].axvline(x=0, color="red", linestyle="--", linewidth=2, label="Zero")
-                            axes[0, 1].axvline(
-                                x=np.mean(diff_values),
-                                color="blue",
-                                linestyle="-",
-                                linewidth=2,
-                                label=f"Mean: {np.mean(diff_values):.6f}"
+                        with col_nc:
+                            st.markdown(
+                                f"<h3 style='color: gray; text-align: center;'>{n_nochange}</h3>",
+                                unsafe_allow_html=True
                             )
-                            axes[0, 1].set_xlabel(f"Difference Value ({unit})")
-                            axes[0, 1].set_ylabel("Number of Pixels")
-                            axes[0, 1].set_title("Distribution of Differences")
-                            axes[0, 1].legend()
-                            axes[0, 1].grid(True, alpha=0.3)
-
-                            if coords and len(coords) == len(diff_values):
-                                lons = [c[0] for c in coords]
-                                lats = [c[1] for c in coords]
-
-                                scatter = axes[1, 0].scatter(
-                                    lons, lats, c=diff_values, cmap="RdBu_r", s=30, alpha=0.7
-                                )
-                                axes[1, 0].set_xlabel("Longitude")
-                                axes[1, 0].set_ylabel("Latitude")
-                                axes[1, 0].set_title("Spatial Distribution of Differences")
-                                plt.colorbar(scatter, ax=axes[1, 0], label=f"Difference ({unit})")
-                            else:
-                                axes[1, 0].text(
-                                    0.5, 0.5, "No coordinate data available",
-                                    horizontalalignment="center",
-                                    verticalalignment="center",
-                                    transform=axes[1, 0].transAxes
-                                )
-
-                            box_data = [left_values, right_values, diff_values]
-                            axes[1, 1].boxplot(
-                                box_data,
-                                tick_labels=[f"{year_l}", f"{year_r}", "Difference"]
+                            st.markdown(
+                                f"<p style='text-align: center;'>NO CHANGE ⚪<br>({n_nochange/len(diff_values)*100:.1f}%)</p>",
+                                unsafe_allow_html=True
                             )
-                            axes[1, 1].set_ylabel(f"Value ({unit})")
-                            axes[1, 1].set_title("Distribution Comparison")
-                            axes[1, 1].grid(True, alpha=0.3)
 
-                            plt.tight_layout()
-                            st.pyplot(fig)
+                        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
-                            st.write("### Example Pixel Comparisons")
-                            n_examples = min(5, len(diff_values))
-                            if n_examples > 0:
-                                example_indices = np.random.choice(len(diff_values), n_examples, replace=False)
-                                example_data = []
-                                for idx in example_indices:
-                                    change_type = (
-                                        "INCREASE 🔴" if diff_values[idx] > 0.0001
-                                        else "DECREASE 🔵" if diff_values[idx] < -0.0001
-                                        else "NO CHANGE ⚪"
-                                    )
-                                    example_data.append({
-                                        f"{month_l} {year_l} Value": f"{left_values[idx]:.6f}",
-                                        f"{month_r} {year_r} Value": f"{right_values[idx]:.6f}",
-                                        "Difference": f"{diff_values[idx]:.6f}",
-                                        "Change": change_type
-                                    })
+                        scatter = axes[0, 0].scatter(
+                            left_values, right_values, alpha=0.5, s=10, c=diff_values, cmap="RdBu_r"
+                        )
+                        min_val = min(left_values.min(), right_values.min())
+                        max_val = max(left_values.max(), right_values.max())
+                        axes[0, 0].plot(
+                            [min_val, max_val], [min_val, max_val],
+                            "k--", label="1:1 line", alpha=0.5
+                        )
+                        axes[0, 0].set_xlabel(f"{month_l} {year_l} Values ({unit})")
+                        axes[0, 0].set_ylabel(f"{month_r} {year_r} Values ({unit})")
+                        axes[0, 0].set_title("Pixel-by-Pixel Comparison")
+                        axes[0, 0].legend()
+                        axes[0, 0].grid(True, alpha=0.3)
+                        plt.colorbar(scatter, ax=axes[0, 0], label=f"Difference ({unit})")
 
-                                st.table(example_data)
+                        axes[0, 1].hist(diff_values, bins=30, color="gray", edgecolor="black", alpha=0.7)
+                        axes[0, 1].axvline(x=0, color="red", linestyle="--", linewidth=2, label="Zero")
+                        axes[0, 1].axvline(
+                            x=np.mean(diff_values),
+                            color="blue",
+                            linestyle="-",
+                            linewidth=2,
+                            label=f"Mean: {np.mean(diff_values):.6f}"
+                        )
+                        axes[0, 1].set_xlabel(f"Difference Value ({unit})")
+                        axes[0, 1].set_ylabel("Number of Pixels")
+                        axes[0, 1].set_title("Distribution of Differences")
+                        axes[0, 1].legend()
+                        axes[0, 1].grid(True, alpha=0.3)
 
-                            st.write("### Conclusion")
-                            mean_diff = np.mean(diff_values)
-                            if mean_diff > 0.0001:
-                                st.success(f"✅ **OVERALL INCREASE**: Mean difference = {mean_diff:.6f} {unit}")
-                            elif mean_diff < -0.0001:
-                                st.error(f"❌ **OVERALL DECREASE**: Mean difference = {mean_diff:.6f} {unit}")
-                            else:
-                                st.warning(f"⚠️ **NO OVERALL CHANGE**: Mean difference = {mean_diff:.6f} {unit}")
-
-                            if n_increase > n_decrease:
-                                st.info(
-                                    f"More pixels show INCREASES ({n_increase}, {n_increase/len(diff_values)*100:.1f}%) "
-                                    f"than DECREASES ({n_decrease}, {n_decrease/len(diff_values)*100:.1f}%)"
-                                )
-                            elif n_decrease > n_increase:
-                                st.info(
-                                    f"More pixels show DECREASES ({n_decrease}, {n_decrease/len(diff_values)*100:.1f}%) "
-                                    f"than INCREASES ({n_increase}, {n_increase/len(diff_values)*100:.1f}%)"
-                                )
-                            else:
-                                st.info(f"Equal number of increases and decreases ({n_increase} each)")
+                        if coords and len(coords) == len(diff_values):
+                            lons = [c[0] for c in coords]
+                            lats = [c[1] for c in coords]
+                            scatter = axes[1, 0].scatter(
+                                lons, lats, c=diff_values, cmap="RdBu_r", s=30, alpha=0.7
+                            )
+                            axes[1, 0].set_xlabel("Longitude")
+                            axes[1, 0].set_ylabel("Latitude")
+                            axes[1, 0].set_title("Spatial Distribution of Differences")
+                            plt.colorbar(scatter, ax=axes[1, 0], label=f"Difference ({unit})")
                         else:
-                            st.warning("No valid pixels found after filtering")
+                            axes[1, 0].text(
+                                0.5, 0.5, "No coordinate data available",
+                                horizontalalignment="center",
+                                verticalalignment="center",
+                                transform=axes[1, 0].transAxes
+                            )
+
+                        axes[1, 1].boxplot(
+                            [left_values, right_values, diff_values],
+                            tick_labels=[f"{year_l}", f"{year_r}", "Difference"]
+                        )
+                        axes[1, 1].set_ylabel(f"Value ({unit})")
+                        axes[1, 1].set_title("Distribution Comparison")
+                        axes[1, 1].grid(True, alpha=0.3)
+
+                        plt.tight_layout()
+                        st.pyplot(fig)
+
                     else:
-                        st.warning("No samples returned from Earth Engine")
+                        st.warning("No valid pixels found after filtering")
 
                 except Exception as e:
                     st.warning(f"Could not analyze pixel variations: {str(e)}")
-                    st.exception(e)
     else:
         with st.expander("📊 Pixel-by-Pixel Analysis", expanded=True):
-            st.info("Switch off Fast mode in the performance tab to see detailed pixel-by-pixel analysis")
+            st.info("Fast mode keeps the app responsive. Turn it off for full pixel-level diagnostics.")
 
 except Exception as e:
     st.error(f"Error preparing map layers: {str(e)}")
-    st.info("Try switching to Fast mode or selecting a different date range.")
     st.stop()
 
 band = meta["band"]
@@ -824,11 +794,9 @@ st.subheader("Difference Map (Right − Left)")
 
 diff_map = folium.Map(location=[40, -100], zoom_start=4, control_scale=True)
 
-diff_tile_name = f"Difference ({month_r} {year_r} - {month_l} {year_l})"
-
 folium.TileLayer(
     tiles=meta["diff_tiles"],
-    name=diff_tile_name,
+    name=f"Difference ({month_r} {year_r} - {month_l} {year_l})",
     attr="Sentinel-5P • Google Earth Engine",
     opacity=opacity
 ).add_to(diff_map)
@@ -859,26 +827,21 @@ with st.expander("📊 Data Quality Notes", expanded=False):
 - Left panel stream: `{stream_left}`
 - Right panel stream: `{stream_right}`
 
-**Important notes**
-- Maps show monthly median concentrations
-- Fast mode uses predefined visualization ranges
-- Precise mode samples 1000 pixels for dynamic range estimation
-- Black/blue indicates lower concentrations; red indicates higher concentrations
+**Legend behavior**
+- Legends are dynamic and recalculated from sampled pixels for each selected month/year
+- In Fast mode, only the tile rendering range stays broad and fixed for speed
+- In Precise mode, both tile rendering and legends are dynamic
 
 **Difference map**
 - Shows absolute difference: **Right panel − Left panel**
-- 🔴 **Red** = Increase (Right > Left)
+- 🔴 **Red** = Increase
 - ⚪ **White** = No change
-- 🔵 **Blue** = Decrease (Right < Left)
+- 🔵 **Blue** = Decrease
 
 **Units**
 - `mol/m²`: moles per square meter
 - `ppbv`: parts per billion by volume
 - `unitless`: no physical units
-
-**Stream selection logic**
-- NRTI: used for very recent dates
-- OFFL: used for historical dates when available and more stable
 """)
 
 # ---------------------------------------------------------
