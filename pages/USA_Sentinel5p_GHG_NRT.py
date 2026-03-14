@@ -100,11 +100,11 @@ with col2:
 # ---------------------------------------------------------
 with st.expander("⚡ Performance", expanded=False):
     fast_mode = st.toggle(
-        "Fast mode (fast tiles + dynamic sampled legends)",
+        "Fast mode (broad tile rendering + dynamic percentile legends)",
         value=True,
         help=(
-            "Fast mode keeps map tiles responsive by using broad visualization ranges, "
-            "but legends are still computed dynamically from lightweight pixel samples."
+            "Fast mode keeps map tiles responsive using broad preset ranges, "
+            "while legends are still computed dynamically from Earth Engine percentiles."
         )
     )
 
@@ -161,9 +161,9 @@ gas_dict = {
 }
 
 # ---------------------------------------------------------
-# TILE VIS RANGES
-# These are used for fast tile rendering only.
-# Legends are computed dynamically from sampled data.
+# PRESET TILE VIS RANGES
+# Used only for fast tile rendering.
+# Legends are dynamic from percentile reduceRegion.
 # ---------------------------------------------------------
 FAST_RANGES = {
     "CO_column_number_density": (0.02, 0.05),
@@ -185,7 +185,12 @@ DIFF_PALETTE = ["blue", "white", "red"]
 def fmt_tick(x):
     if x is None:
         return "0"
-    if isinstance(x, float) and (np.isnan(x) or np.isinf(x)):
+    try:
+        x = float(x)
+    except Exception:
+        return str(x)
+
+    if np.isnan(x) or np.isinf(x):
         return "0"
     if abs(x) >= 1000:
         return f"{x:,.0f}"
@@ -278,47 +283,6 @@ def choose_co_stream(year, month):
     return "NRTI" if days_ago < 14 else "OFFL"
 
 
-def robust_buffered_range(values, fallback):
-    """
-    Use robust percentile range to avoid outliers controlling the legend.
-    """
-    vals = np.asarray(values, dtype=float)
-    vals = vals[np.isfinite(vals)]
-    if vals.size < 10:
-        return fallback
-
-    p02 = np.percentile(vals, 2)
-    p98 = np.percentile(vals, 98)
-
-    if not np.isfinite(p02) or not np.isfinite(p98):
-        return fallback
-
-    if p02 == p98:
-        center = p02
-        eps = max(abs(center) * 0.05, 1e-6)
-        return center - eps, center + eps
-
-    pad = 0.05 * (p98 - p02)
-    return float(p02 - pad), float(p98 + pad)
-
-
-def robust_symmetric_diff_range(values, fallback):
-    vals = np.asarray(values, dtype=float)
-    vals = vals[np.isfinite(vals)]
-    if vals.size < 10:
-        return (-fallback, fallback)
-
-    p02 = np.percentile(vals, 2)
-    p98 = np.percentile(vals, 98)
-    max_abs = max(abs(p02), abs(p98))
-
-    if not np.isfinite(max_abs) or max_abs <= 0:
-        return (-fallback, fallback)
-
-    max_abs *= 1.05
-    return (-float(max_abs), float(max_abs))
-
-
 def build_image(gas_key, year, month):
     start, end = ee_month_range(year, month)
     cfg = gas_dict[gas_key]
@@ -349,39 +313,79 @@ def build_image(gas_key, year, month):
     return img, stream, col_id
 
 
-def sample_image_values(img, band, num_pixels=800, scale=100000):
-    """
-    Lightweight sampling for dynamic legends.
-    """
+def get_percentile_range(img, band, fallback, p_low=2, p_high=98, scale=50000):
     try:
-        samples = img.sample(
-            region=usa,
+        stats = img.reduceRegion(
+            reducer=ee.Reducer.percentile([p_low, p_high]),
+            geometry=usa,
             scale=scale,
-            numPixels=num_pixels,
-            seed=42,
-            geometries=False
-        ).aggregate_array(band).getInfo()
+            bestEffort=True,
+            maxPixels=1e7
+        ).getInfo()
 
-        if samples is None:
-            return np.array([], dtype=float)
+        low_key = f"{band}_p{p_low}"
+        high_key = f"{band}_p{p_high}"
 
-        vals = []
-        for x in samples:
-            if x is None:
-                continue
-            try:
-                fx = float(x)
-                if np.isfinite(fx):
-                    vals.append(fx)
-            except Exception:
-                pass
+        vmin = stats.get(low_key)
+        vmax = stats.get(high_key)
 
-        return np.array(vals, dtype=float)
+        if vmin is None or vmax is None:
+            return fallback
+
+        vmin = float(vmin)
+        vmax = float(vmax)
+
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            return fallback
+
+        if vmin == vmax:
+            eps = max(abs(vmin) * 0.05, 1e-6)
+            return vmin - eps, vmax + eps
+
+        pad = 0.05 * (vmax - vmin)
+        return vmin - pad, vmax + pad
 
     except Exception:
-        return np.array([], dtype=float)
+        return fallback
 
 
+def get_percentile_diff_range(img_diff, band, fallback_abs, p_low=2, p_high=98, scale=50000):
+    try:
+        stats = img_diff.reduceRegion(
+            reducer=ee.Reducer.percentile([p_low, p_high]),
+            geometry=usa,
+            scale=scale,
+            bestEffort=True,
+            maxPixels=1e7
+        ).getInfo()
+
+        low_key = f"{band}_p{p_low}"
+        high_key = f"{band}_p{p_high}"
+
+        vlow = stats.get(low_key)
+        vhigh = stats.get(high_key)
+
+        if vlow is None or vhigh is None:
+            return -fallback_abs, fallback_abs
+
+        vlow = float(vlow)
+        vhigh = float(vhigh)
+
+        if not np.isfinite(vlow) or not np.isfinite(vhigh):
+            return -fallback_abs, fallback_abs
+
+        max_abs = max(abs(vlow), abs(vhigh))
+        max_abs = max(max_abs * 1.05, 1e-6)
+
+        return -max_abs, max_abs
+
+    except Exception:
+        return -fallback_abs, fallback_abs
+
+
+# ---------------------------------------------------------
+# CACHED EE PIPELINE
+# ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 @retry(
     stop=stop_after_attempt(3),
@@ -401,38 +405,27 @@ def compute_tiles_and_meta(
     img_right, stream_right, col_right = build_image(gas_key, year_r, month_r_num)
     img_diff = img_right.subtract(img_left).rename(band)
 
-    # -----------------------------------------------------
-    # Fast mode:
-    #   - tiles use broad fixed ranges for responsiveness
-    #   - legends still use lightweight dynamic sampled ranges
-    # Precise mode:
-    #   - both tiles and legends use dynamic sampled ranges
-    # -----------------------------------------------------
     fallback_min, fallback_max = FAST_RANGES.get(band, (0.0, 1.0))
     fallback_diff = max((fallback_max - fallback_min) * 0.3, 1e-6)
 
-    # Dynamic legend ranges from sample values
-    left_vals = sample_image_values(
-        img_left, band,
-        num_pixels=600 if fast_mode else 1200,
-        scale=120000 if fast_mode else 80000
+    # Dynamic legend ranges from Earth Engine percentiles
+    left_leg_min, left_leg_max = get_percentile_range(
+        img_left, band, (fallback_min, fallback_max),
+        p_low=2, p_high=98,
+        scale=80000 if fast_mode else 50000
     )
-    right_vals = sample_image_values(
-        img_right, band,
-        num_pixels=600 if fast_mode else 1200,
-        scale=120000 if fast_mode else 80000
+    right_leg_min, right_leg_max = get_percentile_range(
+        img_right, band, (fallback_min, fallback_max),
+        p_low=2, p_high=98,
+        scale=80000 if fast_mode else 50000
     )
-    diff_vals = sample_image_values(
-        img_diff, band,
-        num_pixels=600 if fast_mode else 1200,
-        scale=120000 if fast_mode else 80000
+    diff_leg_min, diff_leg_max = get_percentile_diff_range(
+        img_diff, band, fallback_diff,
+        p_low=2, p_high=98,
+        scale=80000 if fast_mode else 50000
     )
 
-    left_leg_min, left_leg_max = robust_buffered_range(left_vals, (fallback_min, fallback_max))
-    right_leg_min, right_leg_max = robust_buffered_range(right_vals, (fallback_min, fallback_max))
-    diff_leg_min, diff_leg_max = robust_symmetric_diff_range(diff_vals, fallback_diff)
-
-    # Tile ranges
+    # Tile rendering ranges
     if fast_mode:
         left_tile_min, left_tile_max = fallback_min, fallback_max
         right_tile_min, right_tile_max = fallback_min, fallback_max
@@ -477,7 +470,7 @@ def compute_tiles_and_meta(
         "diff_min": diff_leg_min,
         "diff_max": diff_leg_max,
 
-        # tile ranges for transparency/debugging
+        # actual tile rendering ranges
         "left_tile_min": left_tile_min,
         "left_tile_max": left_tile_max,
         "right_tile_min": right_tile_min,
@@ -489,9 +482,6 @@ def compute_tiles_and_meta(
         "stream_right": stream_right,
         "col_left": col_left,
         "col_right": col_right,
-        "n_left_samples": int(left_vals.size),
-        "n_right_samples": int(right_vals.size),
-        "n_diff_samples": int(diff_vals.size),
     }
 
 # ---------------------------------------------------------
@@ -512,17 +502,14 @@ try:
         st.write(f"**Left panel ({month_l} {year_l})**")
         st.write(f"- Dynamic legend range: {meta['left_min']:.6f} to {meta['left_max']:.6f}")
         st.write(f"- Tile render range: {meta['left_tile_min']:.6f} to {meta['left_tile_max']:.6f}")
-        st.write(f"- Sample count used: {meta['n_left_samples']}")
 
         st.write(f"**Right panel ({month_r} {year_r})**")
         st.write(f"- Dynamic legend range: {meta['right_min']:.6f} to {meta['right_max']:.6f}")
         st.write(f"- Tile render range: {meta['right_tile_min']:.6f} to {meta['right_tile_max']:.6f}")
-        st.write(f"- Sample count used: {meta['n_right_samples']}")
 
         st.write("**Difference map**")
         st.write(f"- Dynamic legend range: {meta['diff_min']:.6f} to {meta['diff_max']:.6f}")
         st.write(f"- Tile render range: {meta['diff_tile_min']:.6f} to {meta['diff_tile_max']:.6f}")
-        st.write(f"- Sample count used: {meta['n_diff_samples']}")
 
         if meta["diff_min"] < 0 and meta["diff_max"] > 0:
             st.success("✅ Difference legend captures both increases and decreases")
@@ -531,6 +518,7 @@ try:
         elif meta["diff_max"] <= 0:
             st.warning("⚠️ Difference legend suggests only decreases")
 
+    # Optional pixel-level analysis
     if not fast_mode:
         with st.expander("📊 Pixel-by-Pixel Analysis", expanded=True):
             with st.spinner("Analyzing pixel-level variations..."):
@@ -611,43 +599,6 @@ try:
                             st.write(f"Min: {np.min(diff_values):.6f}")
                             st.write(f"Max: {np.max(diff_values):.6f}")
 
-                        n_increase = np.sum(diff_values > 0.0001)
-                        n_decrease = np.sum(diff_values < -0.0001)
-                        n_nochange = np.sum(np.abs(diff_values) <= 0.0001)
-
-                        st.write("### Pixel-by-Pixel Changes")
-
-                        col_inc, col_dec, col_nc = st.columns(3)
-                        with col_inc:
-                            st.markdown(
-                                f"<h3 style='color: red; text-align: center;'>{n_increase}</h3>",
-                                unsafe_allow_html=True
-                            )
-                            st.markdown(
-                                f"<p style='text-align: center;'>INCREASES 🔴<br>({n_increase/len(diff_values)*100:.1f}%)</p>",
-                                unsafe_allow_html=True
-                            )
-
-                        with col_dec:
-                            st.markdown(
-                                f"<h3 style='color: blue; text-align: center;'>{n_decrease}</h3>",
-                                unsafe_allow_html=True
-                            )
-                            st.markdown(
-                                f"<p style='text-align: center;'>DECREASES 🔵<br>({n_decrease/len(diff_values)*100:.1f}%)</p>",
-                                unsafe_allow_html=True
-                            )
-
-                        with col_nc:
-                            st.markdown(
-                                f"<h3 style='color: gray; text-align: center;'>{n_nochange}</h3>",
-                                unsafe_allow_html=True
-                            )
-                            st.markdown(
-                                f"<p style='text-align: center;'>NO CHANGE ⚪<br>({n_nochange/len(diff_values)*100:.1f}%)</p>",
-                                unsafe_allow_html=True
-                            )
-
                         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
                         scatter = axes[0, 0].scatter(
@@ -709,7 +660,6 @@ try:
 
                         plt.tight_layout()
                         st.pyplot(fig)
-
                     else:
                         st.warning("No valid pixels found after filtering")
 
@@ -762,7 +712,13 @@ with map_col1:
         position="bottomleft"
     )
 
-    st_folium(left_map, height=550, width=500, key="left_map", returned_objects=[])
+    st_folium(
+        left_map,
+        height=550,
+        width=500,
+        key=f"left_map_{gas}_{month_l}_{year_l}_{opacity}_{fast_mode}",
+        returned_objects=[]
+    )
 
 with map_col2:
     right_map = folium.Map(location=[40, -100], zoom_start=4, control_scale=True)
@@ -785,7 +741,13 @@ with map_col2:
         position="bottomright"
     )
 
-    st_folium(right_map, height=550, width=500, key="right_map", returned_objects=[])
+    st_folium(
+        right_map,
+        height=550,
+        width=500,
+        key=f"right_map_{gas}_{month_r}_{year_r}_{opacity}_{fast_mode}",
+        returned_objects=[]
+    )
 
 # ---------------------------------------------------------
 # DIFFERENCE MAP
@@ -812,7 +774,13 @@ add_html_legend(
     position="bottomcenter"
 )
 
-st_folium(diff_map, height=500, width=1100, key="usa_diff_map", returned_objects=[])
+st_folium(
+    diff_map,
+    height=500,
+    width=1100,
+    key=f"diff_map_{gas}_{month_l}_{year_l}_{month_r}_{year_r}_{opacity}_{fast_mode}",
+    returned_objects=[]
+)
 
 # ---------------------------------------------------------
 # DATA QUALITY NOTES
@@ -828,8 +796,8 @@ with st.expander("📊 Data Quality Notes", expanded=False):
 - Right panel stream: `{stream_right}`
 
 **Legend behavior**
-- Legends are dynamic and recalculated from sampled pixels for each selected month/year
-- In Fast mode, only the tile rendering range stays broad and fixed for speed
+- Legends are dynamic and recalculated from Earth Engine percentiles for each selected month/year
+- In Fast mode, only tile rendering stays broad and fixed for speed
 - In Precise mode, both tile rendering and legends are dynamic
 
 **Difference map**
