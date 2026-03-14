@@ -25,13 +25,20 @@ st.write("""
 This dataset provides near real-time high-resolution imagery of UV Aerosol Index, concentrations of Carbon monoxide (CO), water vapor, and Formaldehyde. 
 Other important greenhouse gases such as the total, tropospheric, and stratospheric nitrogen dioxide (NO₂), total atmospheric column ozone (O₃), atmospheric sulphur dioxide (SO₂), and atmospheric methane (CH₄) are included in this application for visualization.
 
-The source of this dataset is obtained from the Earth Engine Data Catalog (Sentinel‑5P) , and the details of these individual gases are available in the catalog.
+The source of this dataset is obtained from the 
+    <a href="https://developers.google.com/earth-engine/datasets/catalog/sentinel-5p" target="_blank">
+        <b>Earth Engine Data Catalog (Sentinel‑5P)</b>
+    </a>, 
+    and the details of these individual gases are available in the catalog.
+    
+This dataset is sourced from the Earth Engine Data Catalog (Sentinel‑5P), and details for individual gases are available in the catalog.
 This application enables users to visually compare atmospheric gas concentrations from Sentinel-5P
 for **all Africa** or any selected **African country** across two selected timeframes.
 
 The left and right panels use a **shared dynamic color scale** for direct comparison,
 while the difference map shows **Right − Left** using its own symmetric blue-white-red scale.
-""")
+""",
+    unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # EARTH ENGINE INITIALIZATION
