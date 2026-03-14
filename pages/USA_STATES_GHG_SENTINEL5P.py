@@ -25,8 +25,12 @@ st.header("Timeframe Comparison of Atmospheric Gases over USA or Any U.S. State"
 st.write("""
 This application enables users to visually compare atmospheric gas concentrations from Sentinel-5P
 for the **entire USA** or for any selected **U.S. state** across two selected timeframes.
-
-The left and right panels use a **shared dynamic color scale** for direct comparison,
+**Recommended comparison mode used here**
+- Left and right panels use one **shared color range**
+- That shared range is derived from the two selected periods together
+- This makes the two maps directly comparable
+- The difference map keeps its own separate symmetric blue-white-red scale
+In other words, the left and right panels use a **shared dynamic color scale** for direct comparison,
 while the difference map shows **Right − Left** using its own symmetric blue-white-red scale.
 """)
 
