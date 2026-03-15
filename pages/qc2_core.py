@@ -132,7 +132,8 @@ class QCArgs:
     threshold_scan_steps: int = 37
 
     figure_options: FigureOptions = field(default_factory=FigureOptions)
-  def fit_resample_with_smote(
+    
+def fit_resample_with_smote(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     use_smote: bool = True,
@@ -160,7 +161,9 @@ class QCArgs:
     y_res = pd.Series(y_res, name=y_train.name)
 
     return X_res, y_res
-  def threshold_search(y_true, y_prob, args: QCArgs):
+
+
+def threshold_search(y_true, y_prob, args: QCArgs):
 
     thresholds = np.linspace(
         args.threshold_scan_min,
@@ -200,7 +203,9 @@ class QCArgs:
         })
 
     return pd.DataFrame(rows)
-    def choose_best_threshold(df, args: QCArgs):
+
+
+def choose_best_threshold(df, args: QCArgs):
 
     if args.threshold_metric == "recall_bad":
 
@@ -230,15 +235,15 @@ class QCArgs:
             ).iloc[0]["threshold"]
         )
 
-    # default f1_bad
-
     return float(
         df.sort_values(
             "f1_bad",
             ascending=False
         ).iloc[0]["threshold"]
     )
-    def make_classifier(model_name: str, use_class_weighting=True):
+
+
+def make_classifier(model_name: str, use_class_weighting=True):
 
     cw = "balanced" if use_class_weighting else None
 
@@ -282,17 +287,9 @@ class QCArgs:
         )
 
     else:
-
         raise ValueError("Unsupported model")
 
-    pipe = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-        ("clf", clf)
-    ])
-
-    return pipe
-    pipe = make_classifier(
+pipe = make_classifier(
     args.ml_model,
     args.use_class_weighting
 )
@@ -326,5 +323,6 @@ else:
     best_threshold = args.ml_prob_threshold
 
 y_pred = (y_prob >= best_threshold).astype(int)
+
 
 warnings.filterwarnings("ignore")
