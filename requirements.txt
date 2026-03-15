@@ -20,3 +20,6 @@ pyshp
 
 plotly
 scikit-learn
+
+
+imbalanced-learn
