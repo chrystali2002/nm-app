@@ -439,7 +439,7 @@ if preview_requested:
         st.warning(f"Preview unavailable: {e}")
 
 # -----------------------------------------------------------------------------
-# MAIN RUN
+# MAIN RUN (corrected section for tabs and display)
 # -----------------------------------------------------------------------------
 if not run_button:
     st.info("Use the preview above to inspect station availability, then click **Run QC Pipeline**.")
@@ -526,6 +526,30 @@ with tempfile.TemporaryDirectory() as tmpdir:
             pie_charts = create_flag_distribution_pie_charts(comparison_df)
             # Save pie charts to output directory
             save_pie_charts(pie_charts, outdir)
+            
+            # Also display them immediately in the main area
+            if pie_charts:
+                st.subheader("📊 Flag Type Distribution Analysis")
+                st.markdown("Here are the pie charts showing the distribution of different flag types:")
+                
+                # Create columns for better layout
+                col1, col2 = st.columns(2)
+                
+                if 'flag_type_distribution' in pie_charts:
+                    with col1:
+                        st.markdown("### Overall Flag Distribution")
+                        st.pyplot(pie_charts['flag_type_distribution'])
+                
+                if 'ml_vs_rule_distribution' in pie_charts:
+                    with col2:
+                        st.markdown("### ML vs Rule-based Flags")
+                        st.pyplot(pie_charts['ml_vs_rule_distribution'])
+                
+                if 'bad_obs_flag_distribution' in pie_charts:
+                    st.markdown("### Bad Observations Flag Distribution")
+                    st.pyplot(pie_charts['bad_obs_flag_distribution'])
+                
+                st.markdown("---")
         else:
             pie_charts = {}
 
@@ -547,24 +571,14 @@ with tempfile.TemporaryDirectory() as tmpdir:
             "elev_m": primary_station.get("ELEV_M", None),
         })
 
-        # Create tabs - include Flag Distribution if we have charts
-        if pie_charts:
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "QC Output Table",
-                "Neighbors",
-                "ML Metrics",
-                "Flag Distribution",
-                "Figures",
-                "Downloads"
-            ])
-        else:
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "QC Output Table",
-                "Neighbors",
-                "ML Metrics",
-                "Figures",
-                "Downloads"
-            ])
+        # Create tabs
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "QC Output Table",
+            "Neighbors",
+            "ML Metrics",
+            "All Figures",
+            "Downloads"
+        ])
 
         with tab1:
             st.dataframe(comparison_df.head(500), use_container_width=True)
@@ -590,86 +604,27 @@ with tempfile.TemporaryDirectory() as tmpdir:
                 st.markdown("**Top feature importances**")
                 st.dataframe(importances, use_container_width=True)
 
-        # Flag Distribution tab (if charts exist)
-        if pie_charts:
-            with tab4:
-                if pie_charts:
-                    st.subheader("Flag Type Distribution Analysis")
-                    
-                    # Display each pie chart with explanation
-                    if 'flag_type_distribution' in pie_charts:
-                        st.markdown("### Overall Flag Type Distribution")
-                        st.markdown("This chart shows the distribution of different QC flag types across all observations.")
-                        st.pyplot(pie_charts['flag_type_distribution'])
-                        
-                        # Calculate and display summary statistics
-                        total_flags = sum([comparison_df[col].sum() for col in ['spatial_flag', 'flatline_flag', 
-                                                                               'spike_flag', 'range_flag', 
-                                                                               'climatology_flag'] if col in comparison_df.columns])
-                        st.markdown(f"**Total flags detected:** {int(total_flags):,}")
-                        st.markdown("---")
-                    
-                    if 'ml_vs_rule_distribution' in pie_charts:
-                        st.markdown("### ML vs Rule-based Flag Distribution")
-                        st.markdown("Comparison between machine learning detected flags and traditional rule-based flags.")
-                        st.pyplot(pie_charts['ml_vs_rule_distribution'])
-                        
-                        ml_flags = comparison_df['ml_bad'].sum() if 'ml_bad' in comparison_df.columns else 0
-                        rule_flags = comparison_df['rule_flag'].sum() if 'rule_flag' in comparison_df.columns else 0
-                        st.markdown(f"**ML flags:** {int(ml_flags):,}")
-                        st.markdown(f"**Rule-based flags:** {int(rule_flags):,}")
-                        st.markdown("---")
-                    
-                    if 'bad_obs_flag_distribution' in pie_charts:
-                        st.markdown("### Flag Distribution for 'Bad' Observations")
-                        st.markdown("Distribution of flag types specifically for observations classified as 'bad' (silver_label = 1).")
-                        st.pyplot(pie_charts['bad_obs_flag_distribution'])
-                        
-                        bad_obs_count = (comparison_df['silver_label'] == 1).sum()
-                        st.markdown(f"**Total 'bad' observations:** {bad_obs_count:,}")
-                    
-                    # Add summary statistics
-                    st.markdown("### Summary Statistics")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    total_obs = len(comparison_df)
-                    total_flags = sum([comparison_df[col].sum() for col in ['spatial_flag', 'flatline_flag', 
-                                                                           'spike_flag', 'range_flag', 
-                                                                           'climatology_flag'] if col in comparison_df.columns])
-                    
-                    col1.metric("Total Observations", f"{total_obs:,}")
-                    col2.metric("Total Flags", f"{int(total_flags):,}")
-                    col3.metric("Flags per Observation", f"{total_flags/total_obs:.2f}")
-                    
-                else:
-                    st.info("No flag data available to generate distribution charts.")
-
-        # Figures tab
-        if pie_charts:
-            figures_tab = tab5
-        else:
-            figures_tab = tab4
-            
-        with figures_tab:
+        with tab4:  # All Figures tab
             png_files = sorted(outdir.glob("*.png"))
             if png_files:
+                st.markdown("### All Generated Figures")
                 for png in png_files:
-                    # Skip pie charts here since they're in their own tab
-                    if png.name not in ['flag_type_distribution.png', 
-                                       'ml_vs_rule_distribution.png', 
-                                       'bad_obs_flag_distribution.png']:
-                        st.markdown(f"**{png.name}**")
+                    with st.expander(f"📊 {png.name}"):
                         st.image(str(png), use_container_width=True)
+                        
+                        # Add download button for individual figure
+                        with open(png, "rb") as f:
+                            st.download_button(
+                                f"Download {png.name}",
+                                data=f.read(),
+                                file_name=png.name,
+                                mime="image/png",
+                                key=f"download_{png.name}"
+                            )
             else:
                 st.info("No figures were generated.")
 
-        # Downloads tab
-        if pie_charts:
-            downloads_tab = tab6
-        else:
-            downloads_tab = tab5
-            
-        with downloads_tab:
+        with tab5:  # Downloads tab
             qc_csv = outdir / "qc_output_table.csv"
             if qc_csv.exists():
                 with open(qc_csv, "rb") as f:
@@ -689,6 +644,10 @@ with tempfile.TemporaryDirectory() as tmpdir:
             )
 
     except Exception as e:
+        progress_placeholder.empty()
+        st.error(f"Pipeline failed: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         progress_placeholder.empty()
         st.error(f"Pipeline failed: {e}")
         import traceback
