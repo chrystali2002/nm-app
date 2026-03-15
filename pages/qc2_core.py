@@ -54,7 +54,6 @@ class FigureOptions:
 # ---------------------------------------------------------
 # QC ARGUMENTS
 # ---------------------------------------------------------
-
 @dataclass
 class QCArgs:
 
@@ -69,16 +68,30 @@ class QCArgs:
 
     max_neighbors: int = 3
     max_distance_km: float = 30.0
+    max_elev_diff: float = 300.0
     min_corr: float = 0.40
+
+    aux_contamination: float = 0.02
+
+    metadata_events_csv: Optional[str] = None
+    expert_labels_csv: Optional[str] = None
+    expert_label_col: str = "expert_label"
+
+    train_ml_on: str = "expert_else_silver"
 
     ml_model: str = "random_forest"
 
+    split_method: str = "latest_years"
+    n_test_years: Optional[int] = None
+
     ml_prob_threshold: float = 0.80
 
+    # imbalance handling
     use_class_weighting: bool = True
     use_smote: bool = True
     smote_k_neighbors: int = 5
 
+    # threshold optimization
     auto_tune_threshold: bool = True
     threshold_metric: str = "f1_bad"
     min_precision_bad: float = 0.50
