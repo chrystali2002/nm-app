@@ -4,22 +4,21 @@ Streamlit Interface for Advanced Temperature QC System
 Uses qc2_core.py
 """
 
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent))
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import roc_curve, precision_recall_curve
-import sys
-from pathlib import Path
 
-# Add the pages directory to Python path
-sys.path.append(str(Path(__file__).parent))
-from qc2_core import (
-    QCArgs,
-    FigureOptions,
-    run_pipeline
-)
+from qc2_core import QCArgs, FigureOptions, run_pipeline
+
+
 
 st.set_page_config(
     page_title="Advanced Temperature QC",
