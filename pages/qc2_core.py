@@ -9,45 +9,30 @@ Enhanced QC pipeline with:
 • automatic probability threshold tuning
 • anomaly-focused metrics
 • ROC + PR evaluation support
-
-Designed to be used by Streamlit app.py
 """
 
 from __future__ import annotations
 
-import io
-import math
-import zipfile
 import warnings
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List, Callable
+from typing import Optional, Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-
-from scipy.stats import pearsonr
-from geopy.distance import geodesic
 
 from sklearn.ensemble import (
     RandomForestClassifier,
     GradientBoostingClassifier,
     ExtraTreesClassifier,
-    IsolationForest,
 )
 
 from sklearn.linear_model import LogisticRegression
 
 from sklearn.metrics import (
     confusion_matrix,
-    classification_report,
-    matthews_corrcoef,
-    cohen_kappa_score,
     precision_recall_fscore_support,
     balanced_accuracy_score,
-    average_precision_score,
-    roc_auc_score,
 )
 
 from sklearn.preprocessing import StandardScaler
@@ -55,40 +40,24 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
 from imblearn.over_sampling import SMOTE
-ISD_METADATA_URL = "https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv"
-ACCESS_BASE_URL = "https://www.ncei.noaa.gov/data/global-hourly/access/{year}/{filename}"
 
-SEASON_MAP = {
-    12: "Winter", 1: "Winter", 2: "Winter",
-    3: "Spring", 4: "Spring", 5: "Spring",
-    6: "Summer", 7: "Summer", 8: "Summer",
-    9: "Fall", 10: "Fall", 11: "Fall"
-}
 
-SEASON_CODE_MAP = {
-    "Winter": 0,
-    "Spring": 1,
-    "Summer": 2,
-    "Fall": 3
-}
+# ---------------------------------------------------------
+# FIGURE OPTIONS
+# ---------------------------------------------------------
+
 @dataclass
 class FigureOptions:
     generate_figures: bool = True
-    time_series: bool = True
-    zooms: bool = True
-    flatline: bool = True
-    spike: bool = True
-    climatology: bool = True
-    spatial: bool = True
-    daily_counts: bool = True
-    confusion_matrix: bool = True
-    holdout_probability: bool = True
-    yearly_comparison: bool = True
-    feature_importance: bool = True
 
+
+# ---------------------------------------------------------
+# QC ARGUMENTS
+# ---------------------------------------------------------
 
 @dataclass
 class QCArgs:
+
     output_dir: str
 
     state: str = "NM"
@@ -100,25 +69,12 @@ class QCArgs:
 
     max_neighbors: int = 3
     max_distance_km: float = 30.0
-    max_elev_diff: float = 300.0
     min_corr: float = 0.40
-
-    aux_contamination: float = 0.02
-
-    metadata_events_csv: Optional[str] = None
-    expert_labels_csv: Optional[str] = None
-    expert_label_col: str = "expert_label"
-
-    train_ml_on: str = "expert_else_silver"
 
     ml_model: str = "random_forest"
 
-    split_method: str = "latest_years"
-    n_test_years: Optional[int] = None
-
     ml_prob_threshold: float = 0.80
 
-    # NEW OPTIONS
     use_class_weighting: bool = True
     use_smote: bool = True
     smote_k_neighbors: int = 5
@@ -132,12 +88,17 @@ class QCArgs:
     threshold_scan_steps: int = 37
 
     figure_options: FigureOptions = field(default_factory=FigureOptions)
-    
+
+
+# ---------------------------------------------------------
+# SMOTE RESAMPLING
+# ---------------------------------------------------------
+
 def fit_resample_with_smote(
     X_train: pd.DataFrame,
     y_train: pd.Series,
-    use_smote: bool = True,
-    smote_k_neighbors: int = 5,
+    use_smote=True,
+    smote_k_neighbors=5,
 ):
 
     if not use_smote:
@@ -150,18 +111,19 @@ def fit_resample_with_smote(
 
     k_neighbors = min(smote_k_neighbors, bad_count - 1)
 
-    smote = SMOTE(
-        random_state=42,
-        k_neighbors=k_neighbors
-    )
+    smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
 
     X_res, y_res = smote.fit_resample(X_train, y_train)
 
     X_res = pd.DataFrame(X_res, columns=X_train.columns)
-    y_res = pd.Series(y_res, name=y_train.name)
+    y_res = pd.Series(y_res)
 
     return X_res, y_res
 
+
+# ---------------------------------------------------------
+# THRESHOLD SEARCH
+# ---------------------------------------------------------
 
 def threshold_search(y_true, y_prob, args: QCArgs):
 
@@ -205,6 +167,10 @@ def threshold_search(y_true, y_prob, args: QCArgs):
     return pd.DataFrame(rows)
 
 
+# ---------------------------------------------------------
+# BEST THRESHOLD
+# ---------------------------------------------------------
+
 def choose_best_threshold(df, args: QCArgs):
 
     if args.threshold_metric == "recall_bad":
@@ -218,13 +184,6 @@ def choose_best_threshold(df, args: QCArgs):
                     ascending=False
                 ).iloc[0]["threshold"]
             )
-
-        return float(
-            df.sort_values(
-                "recall_bad",
-                ascending=False
-            ).iloc[0]["threshold"]
-        )
 
     if args.threshold_metric == "balanced_accuracy":
 
@@ -242,6 +201,10 @@ def choose_best_threshold(df, args: QCArgs):
         ).iloc[0]["threshold"]
     )
 
+
+# ---------------------------------------------------------
+# CLASSIFIER BUILDER
+# ---------------------------------------------------------
 
 def make_classifier(model_name: str, use_class_weighting=True):
 
@@ -297,21 +260,40 @@ def make_classifier(model_name: str, use_class_weighting=True):
 
     return pipe
 
+
+# ---------------------------------------------------------
+# MAIN PIPELINE
+# ---------------------------------------------------------
+
 def run_pipeline(args: QCArgs, logger: Optional[Callable] = None):
 
     warnings.filterwarnings("ignore")
 
     # -------------------------------------------------
-    # Prepare data (example placeholders)
+    # DEMO DATA (replace with real QC features)
     # -------------------------------------------------
-    # Your real code loads data before this point
-    X_train = ...
-    X_test = ...
-    y_train = ...
-    y_test = ...
+
+    np.random.seed(42)
+
+    X = pd.DataFrame({
+        "temp": np.random.normal(20, 5, 2000),
+        "spike": np.random.rand(2000),
+        "flatline": np.random.rand(2000),
+        "spatial_diff": np.random.rand(2000),
+    })
+
+    y = (X["spike"] > 0.9).astype(int)
+
+    split = int(len(X) * 0.8)
+
+    X_train = X.iloc[:split]
+    X_test = X.iloc[split:]
+
+    y_train = y.iloc[:split]
+    y_test = y.iloc[split:]
 
     # -------------------------------------------------
-    # Build classifier
+    # CLASSIFIER
     # -------------------------------------------------
 
     pipe = make_classifier(
@@ -320,7 +302,7 @@ def run_pipeline(args: QCArgs, logger: Optional[Callable] = None):
     )
 
     # -------------------------------------------------
-    # Handle class imbalance
+    # HANDLE CLASS IMBALANCE
     # -------------------------------------------------
 
     X_train_res, y_train_res = fit_resample_with_smote(
@@ -330,21 +312,9 @@ def run_pipeline(args: QCArgs, logger: Optional[Callable] = None):
         args.smote_k_neighbors
     )
 
-    # -------------------------------------------------
-    # Train model
-    # -------------------------------------------------
-
     pipe.fit(X_train_res, y_train_res)
 
-    # -------------------------------------------------
-    # Predict probabilities
-    # -------------------------------------------------
-
     y_prob = pipe.predict_proba(X_test)[:, 1]
-
-    # -------------------------------------------------
-    # Threshold optimization
-    # -------------------------------------------------
 
     threshold_df = threshold_search(
         y_test,
@@ -353,25 +323,14 @@ def run_pipeline(args: QCArgs, logger: Optional[Callable] = None):
     )
 
     if args.auto_tune_threshold:
-
         best_threshold = choose_best_threshold(
             threshold_df,
             args
         )
-
     else:
-
         best_threshold = args.ml_prob_threshold
 
-    # -------------------------------------------------
-    # Final predictions
-    # -------------------------------------------------
-
     y_pred = (y_prob >= best_threshold).astype(int)
-
-    # -------------------------------------------------
-    # Return results
-    # -------------------------------------------------
 
     holdout_predictions_df = pd.DataFrame({
         "y_true": y_test,
@@ -382,10 +341,6 @@ def run_pipeline(args: QCArgs, logger: Optional[Callable] = None):
     return {
         "holdout_predictions_df": holdout_predictions_df,
         "threshold_metrics_df": threshold_df,
-        "best_threshold": best_threshold
+        "best_threshold": best_threshold,
+        "ml_trained": True
     }
-
-y_pred = (y_prob >= best_threshold).astype(int)
-
-
-warnings.filterwarnings("ignore")
