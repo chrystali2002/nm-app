@@ -10,7 +10,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import roc_curve, precision_recall_curve
+import sys
+from pathlib import Path
 
+# Add the pages directory to Python path
+sys.path.append(str(Path(__file__).parent))
 from qc2_core import (
     QCArgs,
     FigureOptions,
