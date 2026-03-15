@@ -104,146 +104,306 @@ with st.expander("📡 Data Source: ASOS Network", expanded=True):
 # -----------------------------------------------------------------------------
 # Helper functions for pie charts
 # -----------------------------------------------------------------------------
+def inspect_dataframe_structure(df: pd.DataFrame):
+    """Helper function to understand what's in your dataframe"""
+    st.sidebar.write("### Dataframe Structure")
+    st.sidebar.write(f"Shape: {df.shape}")
+    
+    # Show flag-related columns
+    flag_cols = [col for col in df.columns if any(term in col.lower() for term in 
+                 ['flag', 'spatial', 'flatline', 'spike', 'range', 'climatology', 'rule', 'ml'])]
+    
+    if flag_cols:
+        st.sidebar.write("### Flag Columns Found:")
+        for col in flag_cols:
+            dtype = df[col].dtype
+            unique_vals = df[col].unique()[:5]
+            try:
+                if dtype in ['int64', 'float64', 'bool']:
+                    sum_val = df[col].sum()
+                else:
+                    sum_val = pd.to_numeric(df[col], errors='coerce').fillna(0).sum()
+            except:
+                sum_val = 'N/A'
+            
+            st.sidebar.write(f"- **{col}**:")
+            st.sidebar.write(f"  Type: {dtype}")
+            st.sidebar.write(f"  Unique values: {unique_vals}")
+            st.sidebar.write(f"  Sum: {sum_val}")
+            st.sidebar.write(f"  Non-null count: {df[col].count()}")
+    else:
+        st.sidebar.write("No flag columns found!")
+        st.sidebar.write("Available columns:", list(df.columns))
+
+
 def create_flag_distribution_pie_charts(comparison_df: pd.DataFrame) -> dict:
     """
-    Create pie charts showing flag type distributions.
+    Create pie charts showing flag type distributions with improved data handling.
     
     Returns:
         Dictionary of matplotlib figures
     """
     figures = {}
     
-    # Define flag columns and their display names
-    flag_columns = {
-        'spatial_flag': 'Spatial',
-        'flatline_flag': 'Flatline',
-        'spike_flag': 'Spike',
-        'range_flag': 'Range (Rule)',
-        'climatology_flag': 'Climatology (Rule)'
-    }
+    # Define flag columns and their display names - comprehensive list
+    flag_mappings = [
+        ('spatial_flag', 'Spatial'),
+        ('spatial', 'Spatial'),
+        ('spatial_check', 'Spatial'),
+        ('spatial_consistency', 'Spatial'),
+        ('flatline_flag', 'Flatline'),
+        ('flatline', 'Flatline'),
+        ('flatline_check', 'Flatline'),
+        ('flatline_detected', 'Flatline'),
+        ('spike_flag', 'Spike'),
+        ('spike', 'Spike'),
+        ('spike_check', 'Spike'),
+        ('spike_detected', 'Spike'),
+        ('range_flag', 'Range'),
+        ('range', 'Range'),
+        ('range_check', 'Range'),
+        ('climatology_flag', 'Climatology'),
+        ('climatology', 'Climatology'),
+        ('climatology_check', 'Climatology'),
+        ('zscore_flag', 'Climatology'),
+    ]
     
-    # 1. Overall flag type distribution (counts of each flag type)
+    # Also check for rule_flag components
+    if 'rule_flag' in comparison_df.columns:
+        rule_count = comparison_df['rule_flag'].sum() if comparison_df['rule_flag'].dtype in ['int64', 'float64', 'bool'] else 0
+        st.sidebar.write(f"Debug - rule_flag sum: {rule_count}")
+    
+    # 1. Overall flag type distribution - try to find actual flag columns
     flag_counts = {}
-    for col, label in flag_columns.items():
-        if col in comparison_df.columns:
-            flag_counts[label] = comparison_df[col].sum()
+    
+    # First, check which flag columns actually exist and have values
+    found_columns = set()
+    for col, label in flag_mappings:
+        if col in comparison_df.columns and col not in found_columns:
+            found_columns.add(col)
+            
+            # Convert to numeric if it's boolean or object
+            try:
+                if comparison_df[col].dtype == 'bool':
+                    count = comparison_df[col].astype(int).sum()
+                elif comparison_df[col].dtype in ['int64', 'float64']:
+                    count = comparison_df[col].sum()
+                else:
+                    # Try to convert to numeric
+                    count = pd.to_numeric(comparison_df[col], errors='coerce').fillna(0).sum()
+                
+                if count > 0:
+                    if label in flag_counts:
+                        flag_counts[label] += count
+                    else:
+                        flag_counts[label] = count
+                    st.sidebar.write(f"Debug - {col} ({label}): {count} flags")
+            except Exception as e:
+                st.sidebar.write(f"Debug - Error processing {col}: {e}")
+                continue
+    
+    # If no individual flags found, try to break down rule_flag by other means
+    if not flag_counts:
+        st.sidebar.write("Debug - No individual flags found, checking for combined flags")
+        
+        # Check for ml_bad
+        if 'ml_bad' in comparison_df.columns:
+            ml_count = comparison_df['ml_bad'].sum() if comparison_df['ml_bad'].dtype in ['int64', 'float64', 'bool'] else 0
+            if ml_count > 0:
+                flag_counts['ML Detected'] = ml_count
+        
+        # Check for rule_flag
+        if 'rule_flag' in comparison_df.columns:
+            rule_count = comparison_df['rule_flag'].sum() if comparison_df['rule_flag'].dtype in ['int64', 'float64', 'bool'] else 0
+            if rule_count > 0:
+                flag_counts['Rule-based'] = rule_count
     
     if flag_counts and sum(flag_counts.values()) > 0:
-        fig1, ax1 = plt.subplots(figsize=(10, 8))
+        fig1, ax1 = plt.subplots(figsize=(12, 8))
+        
+        # Use a colorful colormap
         colors = plt.cm.Set3(np.linspace(0, 1, len(flag_counts)))
         
+        # Explode slices slightly for better visibility
+        explode = [0.05] * len(flag_counts)
+        
+        values = list(flag_counts.values())
+        labels = list(flag_counts.keys())
+        total = sum(values)
+        
         wedges, texts, autotexts = ax1.pie(
-            flag_counts.values(),
-            labels=flag_counts.keys(),
-            autopct='%1.1f%%',
+            values,
+            labels=labels,
+            autopct=lambda pct: f'{pct:.1f}%\n({int(pct/100.*total):,})',
             colors=colors,
-            startangle=90
+            startangle=90,
+            explode=explode,
+            shadow=True,
+            textprops={'fontsize': 10}
         )
         
         # Enhance text appearance
         for text in texts:
             text.set_fontsize(10)
+            text.set_fontweight('bold')
         for autotext in autotexts:
             autotext.set_fontsize(9)
             autotext.set_color('white')
-            autotext.set_weight('bold')
+            autotext.set_fontweight('bold')
         
-        ax1.set_title('Flag Type Distribution\n(Total flags by type)', 
+        ax1.set_title(f'Flag Type Distribution\n(Total flags: {int(total):,})', 
                      fontsize=14, fontweight='bold', pad=20)
         ax1.axis('equal')
-        
-        # Add legend with counts
-        legend_labels = [f'{k}: {v:,} ({v/sum(flag_counts.values())*100:.1f}%)' 
-                        for k, v in flag_counts.items()]
-        ax1.legend(wedges, legend_labels, title="Flag Counts", 
-                  loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
         
         plt.tight_layout()
         figures['flag_type_distribution'] = fig1
     
     # 2. ML vs Rule-based flags distribution (if ML column exists)
-    if 'ml_bad' in comparison_df.columns:
-        ml_flags = comparison_df['ml_bad'].sum()
-        rule_flags = comparison_df['rule_flag'].sum() if 'rule_flag' in comparison_df.columns else 0
-        
-        if ml_flags > 0 or rule_flags > 0:
-            fig2, ax2 = plt.subplots(figsize=(8, 8))
-            data = {'Machine Learning': ml_flags, 'Rule-based': rule_flags}
-            colors = ['#ff9999', '#66b3ff']
-            
-            # Filter out zero values
-            data = {k: v for k, v in data.items() if v > 0}
-            
-            if data:
-                wedges, texts, autotexts = ax2.pie(
-                    data.values(),
-                    labels=data.keys(),
-                    autopct='%1.1f%%',
-                    colors=colors[:len(data)],
-                    startangle=90,
-                    explode=(0.05,) if len(data) == 1 else (0.05, 0)
-                )
-                
-                for text in texts:
-                    text.set_fontsize(11)
-                for autotext in autotexts:
-                    autotext.set_fontsize(10)
-                    autotext.set_color('white')
-                    autotext.set_weight('bold')
-                
-                ax2.set_title('ML vs Rule-based Flag Distribution', 
-                             fontsize=14, fontweight='bold', pad=20)
-                ax2.axis('equal')
-                
-                # Add count labels
-                count_labels = [f'{k}: {v:,} ({v/sum(data.values())*100:.1f}%)' 
-                               for k, v in data.items()]
-                ax2.legend(wedges, count_labels, title="Flag Counts", 
-                          loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
-                
-                plt.tight_layout()
-                figures['ml_vs_rule_distribution'] = fig2
+    ml_columns = ['ml_bad', 'ml_flag', 'machine_learning_flag', 'ml_prediction', 'ml_label']
+    ml_col = None
+    for col in ml_columns:
+        if col in comparison_df.columns:
+            ml_col = col
+            break
     
-    # 3. Flag type distribution for observations flagged as "bad" (silver_label == 1)
-    if 'silver_label' in comparison_df.columns:
-        bad_obs = comparison_df[comparison_df['silver_label'] == 1]
-        
-        if not bad_obs.empty:
-            bad_flag_counts = {}
-            for col, label in flag_columns.items():
-                if col in bad_obs.columns:
-                    bad_flag_counts[label] = bad_obs[col].sum()
+    if ml_col:
+        try:
+            if comparison_df[ml_col].dtype == 'bool':
+                ml_flags = comparison_df[ml_col].astype(int).sum()
+            elif comparison_df[ml_col].dtype in ['int64', 'float64']:
+                ml_flags = comparison_df[ml_col].sum()
+            else:
+                ml_flags = pd.to_numeric(comparison_df[ml_col], errors='coerce').fillna(0).sum()
             
-            if bad_flag_counts and sum(bad_flag_counts.values()) > 0:
-                fig3, ax3 = plt.subplots(figsize=(10, 8))
-                colors = plt.cm.Paired(np.linspace(0, 1, len(bad_flag_counts)))
+            rule_flags = 0
+            rule_columns = ['rule_flag', 'rule_based', 'rule_label']
+            for col in rule_columns:
+                if col in comparison_df.columns:
+                    if comparison_df[col].dtype == 'bool':
+                        rule_flags = comparison_df[col].astype(int).sum()
+                    elif comparison_df[col].dtype in ['int64', 'float64']:
+                        rule_flags = comparison_df[col].sum()
+                    else:
+                        rule_flags = pd.to_numeric(comparison_df[col], errors='coerce').fillna(0).sum()
+                    break
+            
+            st.sidebar.write(f"Debug - ML flags: {ml_flags}, Rule flags: {rule_flags}")
+            
+            if ml_flags > 0 or rule_flags > 0:
+                fig2, ax2 = plt.subplots(figsize=(10, 8))
+                data = {'Machine Learning': ml_flags, 'Rule-based': rule_flags}
                 
-                wedges, texts, autotexts = ax3.pie(
-                    bad_flag_counts.values(),
-                    labels=bad_flag_counts.keys(),
-                    autopct='%1.1f%%',
-                    colors=colors,
-                    startangle=90
-                )
+                # Filter out zero values
+                data = {k: v for k, v in data.items() if v > 0}
                 
-                for text in texts:
-                    text.set_fontsize(10)
-                for autotext in autotexts:
-                    autotext.set_fontsize(9)
-                    autotext.set_color('white')
-                    autotext.set_weight('bold')
+                if data:
+                    colors = ['#ff9999', '#66b3ff'][:len(data)]
+                    explode = [0.05] * len(data)
+                    values = list(data.values())
+                    labels = list(data.keys())
+                    total = sum(values)
+                    
+                    wedges, texts, autotexts = ax2.pie(
+                        values,
+                        labels=labels,
+                        autopct=lambda pct: f'{pct:.1f}%\n({int(pct/100.*total):,})',
+                        colors=colors,
+                        startangle=90,
+                        explode=explode,
+                        shadow=True,
+                        textprops={'fontsize': 11}
+                    )
+                    
+                    for text in texts:
+                        text.set_fontweight('bold')
+                    for autotext in autotexts:
+                        autotext.set_fontsize(10)
+                        autotext.set_color('white')
+                        autotext.set_fontweight('bold')
+                    
+                    ax2.set_title(f'ML vs Rule-based Flag Distribution\n(Total flags: {int(total):,})', 
+                                 fontsize=14, fontweight='bold', pad=20)
+                    ax2.axis('equal')
+                    
+                    plt.tight_layout()
+                    figures['ml_vs_rule_distribution'] = fig2
+        except Exception as e:
+            st.sidebar.write(f"Debug - Error in ML vs Rule chart: {e}")
+    
+    # 3. Flag type distribution for observations flagged as "bad"
+    silver_columns = ['silver_label', 'bad_flag', 'is_bad', 'quality_flag', 'final_label', 'label']
+    silver_col = None
+    for col in silver_columns:
+        if col in comparison_df.columns:
+            silver_col = col
+            break
+    
+    if silver_col:
+        try:
+            bad_obs = comparison_df[comparison_df[silver_col] == 1].copy() if silver_col in comparison_df.columns else pd.DataFrame()
+            
+            if not bad_obs.empty:
+                st.sidebar.write(f"Debug - Bad observations count: {len(bad_obs)}")
                 
-                ax3.set_title('Flag Type Distribution for "Bad" Observations\n(Silver Label = 1)', 
-                             fontsize=14, fontweight='bold', pad=20)
-                ax3.axis('equal')
+                bad_flag_counts = {}
+                found_bad_columns = set()
                 
-                legend_labels = [f'{k}: {v:,} ({v/sum(bad_flag_counts.values())*100:.1f}%)' 
-                                for k, v in bad_flag_counts.items()]
-                ax3.legend(wedges, legend_labels, title="Flag Counts", 
-                          loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
+                for col, label in flag_mappings:
+                    if col in bad_obs.columns and col not in found_bad_columns:
+                        found_bad_columns.add(col)
+                        
+                        try:
+                            if bad_obs[col].dtype == 'bool':
+                                count = bad_obs[col].astype(int).sum()
+                            elif bad_obs[col].dtype in ['int64', 'float64']:
+                                count = bad_obs[col].sum()
+                            else:
+                                count = pd.to_numeric(bad_obs[col], errors='coerce').fillna(0).sum()
+                            
+                            if count > 0:
+                                if label in bad_flag_counts:
+                                    bad_flag_counts[label] += count
+                                else:
+                                    bad_flag_counts[label] = count
+                                st.sidebar.write(f"Debug - Bad obs {col}: {count}")
+                        except Exception as e:
+                            continue
                 
-                plt.tight_layout()
-                figures['bad_obs_flag_distribution'] = fig3
+                if bad_flag_counts and sum(bad_flag_counts.values()) > 0:
+                    fig3, ax3 = plt.subplots(figsize=(12, 8))
+                    colors = plt.cm.Paired(np.linspace(0, 1, len(bad_flag_counts)))
+                    explode = [0.05] * len(bad_flag_counts)
+                    
+                    values = list(bad_flag_counts.values())
+                    labels = list(bad_flag_counts.keys())
+                    total = sum(values)
+                    
+                    wedges, texts, autotexts = ax3.pie(
+                        values,
+                        labels=labels,
+                        autopct=lambda pct: f'{pct:.1f}%\n({int(pct/100.*total):,})',
+                        colors=colors,
+                        startangle=90,
+                        explode=explode,
+                        shadow=True,
+                        textprops={'fontsize': 10}
+                    )
+                    
+                    for text in texts:
+                        text.set_fontweight('bold')
+                    for autotext in autotexts:
+                        autotext.set_fontsize(9)
+                        autotext.set_color('white')
+                        autotext.set_fontweight('bold')
+                    
+                    ax3.set_title(f'Flag Distribution for "Bad" Observations\n(Total bad obs: {len(bad_obs):,}, Total flags: {int(total):,})', 
+                                 fontsize=14, fontweight='bold', pad=20)
+                    ax3.axis('equal')
+                    
+                    plt.tight_layout()
+                    figures['bad_obs_flag_distribution'] = fig3
+        except Exception as e:
+            st.sidebar.write(f"Debug - Error in bad observations chart: {e}")
     
     return figures
 
@@ -439,7 +599,7 @@ if preview_requested:
         st.warning(f"Preview unavailable: {e}")
 
 # -----------------------------------------------------------------------------
-# MAIN RUN (corrected section for tabs and display)
+# MAIN RUN
 # -----------------------------------------------------------------------------
 if not run_button:
     st.info("Use the preview above to inspect station availability, then click **Run QC Pipeline**.")
@@ -514,6 +674,12 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
         outdir = Path(results["output_dir"])
         comparison_df = results["comparison_df"]
+        
+        # Add data inspection in sidebar
+        with st.sidebar:
+            with st.expander("🔍 Data Inspection", expanded=False):
+                inspect_dataframe_structure(comparison_df)
+        
         neighbor_summary = results["neighbor_summary"]
         holdout_metrics_df = results["holdout_metrics_df"]
         yearly_summary = results["yearly_summary"]
@@ -523,33 +689,43 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
         # Generate pie charts for flag distributions
         if flag_distribution:
-            pie_charts = create_flag_distribution_pie_charts(comparison_df)
-            # Save pie charts to output directory
-            save_pie_charts(pie_charts, outdir)
-            
-            # Also display them immediately in the main area
-            if pie_charts:
-                st.subheader("📊 Flag Type Distribution Analysis")
-                st.markdown("Here are the pie charts showing the distribution of different flag types:")
+            with st.spinner("Generating flag distribution pie charts..."):
+                pie_charts = create_flag_distribution_pie_charts(comparison_df)
+                # Save pie charts to output directory
+                save_pie_charts(pie_charts, outdir)
                 
-                # Create columns for better layout
-                col1, col2 = st.columns(2)
-                
-                if 'flag_type_distribution' in pie_charts:
-                    with col1:
-                        st.markdown("### Overall Flag Distribution")
-                        st.pyplot(pie_charts['flag_type_distribution'])
-                
-                if 'ml_vs_rule_distribution' in pie_charts:
-                    with col2:
-                        st.markdown("### ML vs Rule-based Flags")
-                        st.pyplot(pie_charts['ml_vs_rule_distribution'])
-                
-                if 'bad_obs_flag_distribution' in pie_charts:
-                    st.markdown("### Bad Observations Flag Distribution")
-                    st.pyplot(pie_charts['bad_obs_flag_distribution'])
-                
-                st.markdown("---")
+                # Display pie charts immediately
+                if pie_charts:
+                    st.subheader("📊 Flag Type Distribution Analysis")
+                    st.markdown("Here are the pie charts showing the distribution of different flag types:")
+                    
+                    # Create columns for better layout
+                    cols = st.columns(2)
+                    col_idx = 0
+                    
+                    if 'flag_type_distribution' in pie_charts:
+                        with cols[col_idx % 2]:
+                            st.markdown("### Overall Flag Distribution")
+                            st.pyplot(pie_charts['flag_type_distribution'])
+                            col_idx += 1
+                    
+                    if 'ml_vs_rule_distribution' in pie_charts:
+                        with cols[col_idx % 2]:
+                            st.markdown("### ML vs Rule-based Flags")
+                            st.pyplot(pie_charts['ml_vs_rule_distribution'])
+                            col_idx += 1
+                    
+                    if 'bad_obs_flag_distribution' in pie_charts:
+                        # Use full width for the third chart if needed
+                        if col_idx % 2 == 0:
+                            st.markdown("### Bad Observations Flag Distribution")
+                            st.pyplot(pie_charts['bad_obs_flag_distribution'])
+                        else:
+                            with cols[1]:
+                                st.markdown("### Bad Observations Flag Distribution")
+                                st.pyplot(pie_charts['bad_obs_flag_distribution'])
+                    
+                    st.markdown("---")
         else:
             pie_charts = {}
 
@@ -557,8 +733,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Observations", f"{len(comparison_df):,}")
-        c2.metric("Rule flags", f"{int(comparison_df['rule_flag'].fillna(0).sum()):,}")
-        c3.metric("Silver bad", f"{int((comparison_df['silver_label'] == 1).sum()):,}")
+        c2.metric("Rule flags", f"{int(comparison_df['rule_flag'].fillna(0).sum()) if 'rule_flag' in comparison_df.columns else 0:,}")
+        c3.metric("Silver bad", f"{int((comparison_df['silver_label'] == 1).sum()) if 'silver_label' in comparison_df.columns else 0:,}")
         c4.metric("ML trained", "Yes" if ml_trained else "No")
 
         st.subheader("Selected station")
@@ -582,6 +758,15 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
         with tab1:
             st.dataframe(comparison_df.head(500), use_container_width=True)
+            
+            # Add download button for full table
+            csv = comparison_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Download full QC table as CSV",
+                data=csv,
+                file_name="qc_output_table_full.csv",
+                mime="text/csv"
+            )
 
         with tab2:
             if neighbor_summary is not None and not neighbor_summary.empty:
@@ -608,28 +793,53 @@ with tempfile.TemporaryDirectory() as tmpdir:
             png_files = sorted(outdir.glob("*.png"))
             if png_files:
                 st.markdown("### All Generated Figures")
-                for png in png_files:
-                    with st.expander(f"📊 {png.name}"):
-                        st.image(str(png), use_container_width=True)
-                        
-                        # Add download button for individual figure
-                        with open(png, "rb") as f:
-                            st.download_button(
-                                f"Download {png.name}",
-                                data=f.read(),
-                                file_name=png.name,
-                                mime="image/png",
-                                key=f"download_{png.name}"
-                            )
+                
+                # Group figures by type
+                pie_chart_files = [f for f in png_files if 'distribution' in f.name]
+                other_files = [f for f in png_files if f not in pie_chart_files]
+                
+                if pie_chart_files:
+                    st.markdown("#### Flag Distribution Charts")
+                    cols = st.columns(2)
+                    for i, png in enumerate(pie_chart_files):
+                        with cols[i % 2]:
+                            st.markdown(f"**{png.name}**")
+                            st.image(str(png), use_container_width=True)
+                            
+                            with open(png, "rb") as f:
+                                st.download_button(
+                                    f"Download {png.name}",
+                                    data=f.read(),
+                                    file_name=png.name,
+                                    mime="image/png",
+                                    key=f"download_pie_{png.name}"
+                                )
+                
+                if other_files:
+                    st.markdown("#### Other Figures")
+                    for png in other_files:
+                        with st.expander(f"📊 {png.name}"):
+                            st.image(str(png), use_container_width=True)
+                            
+                            with open(png, "rb") as f:
+                                st.download_button(
+                                    f"Download {png.name}",
+                                    data=f.read(),
+                                    file_name=png.name,
+                                    mime="image/png",
+                                    key=f"download_{png.name}"
+                                )
             else:
                 st.info("No figures were generated.")
 
         with tab5:  # Downloads tab
+            st.markdown("### Download All Results")
+            
             qc_csv = outdir / "qc_output_table.csv"
             if qc_csv.exists():
                 with open(qc_csv, "rb") as f:
                     st.download_button(
-                        "Download qc_output_table.csv",
+                        "📥 Download qc_output_table.csv",
                         data=f.read(),
                         file_name="qc_output_table.csv",
                         mime="text/csv"
@@ -637,17 +847,13 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
             zip_buffer = zip_directory(outdir)
             st.download_button(
-                "Download all outputs as ZIP",
+                "📥 Download all outputs as ZIP",
                 data=zip_buffer,
                 file_name="advanced_temperature_qc_outputs.zip",
                 mime="application/zip"
             )
 
     except Exception as e:
-        progress_placeholder.empty()
-        st.error(f"Pipeline failed: {e}")
-        import traceback
-        st.code(traceback.format_exc())
         progress_placeholder.empty()
         st.error(f"Pipeline failed: {e}")
         import traceback
