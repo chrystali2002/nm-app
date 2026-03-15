@@ -289,38 +289,101 @@ def make_classifier(model_name: str, use_class_weighting=True):
     else:
         raise ValueError("Unsupported model")
 
-pipe = make_classifier(
-    args.ml_model,
-    args.use_class_weighting
-)
+    pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+        ("clf", clf)
+    ])
 
-X_train_res, y_train_res = fit_resample_with_smote(
-    X_train,
-    y_train,
-    args.use_smote,
-    args.smote_k_neighbors
-)
+    return pipe
 
-pipe.fit(X_train_res, y_train_res)
+def run_pipeline(args: QCArgs, logger: Optional[Callable] = None):
 
-y_prob = pipe.predict_proba(X_test)[:, 1]
+    warnings.filterwarnings("ignore")
 
-threshold_df = threshold_search(
-    y_test,
-    y_prob,
-    args
-)
+    # -------------------------------------------------
+    # Prepare data (example placeholders)
+    # -------------------------------------------------
+    # Your real code loads data before this point
+    X_train = ...
+    X_test = ...
+    y_train = ...
+    y_test = ...
 
-if args.auto_tune_threshold:
+    # -------------------------------------------------
+    # Build classifier
+    # -------------------------------------------------
 
-    best_threshold = choose_best_threshold(
-        threshold_df,
+    pipe = make_classifier(
+        args.ml_model,
+        args.use_class_weighting
+    )
+
+    # -------------------------------------------------
+    # Handle class imbalance
+    # -------------------------------------------------
+
+    X_train_res, y_train_res = fit_resample_with_smote(
+        X_train,
+        y_train,
+        args.use_smote,
+        args.smote_k_neighbors
+    )
+
+    # -------------------------------------------------
+    # Train model
+    # -------------------------------------------------
+
+    pipe.fit(X_train_res, y_train_res)
+
+    # -------------------------------------------------
+    # Predict probabilities
+    # -------------------------------------------------
+
+    y_prob = pipe.predict_proba(X_test)[:, 1]
+
+    # -------------------------------------------------
+    # Threshold optimization
+    # -------------------------------------------------
+
+    threshold_df = threshold_search(
+        y_test,
+        y_prob,
         args
     )
 
-else:
+    if args.auto_tune_threshold:
 
-    best_threshold = args.ml_prob_threshold
+        best_threshold = choose_best_threshold(
+            threshold_df,
+            args
+        )
+
+    else:
+
+        best_threshold = args.ml_prob_threshold
+
+    # -------------------------------------------------
+    # Final predictions
+    # -------------------------------------------------
+
+    y_pred = (y_prob >= best_threshold).astype(int)
+
+    # -------------------------------------------------
+    # Return results
+    # -------------------------------------------------
+
+    holdout_predictions_df = pd.DataFrame({
+        "y_true": y_test,
+        "y_prob": y_prob,
+        "y_pred": y_pred
+    })
+
+    return {
+        "holdout_predictions_df": holdout_predictions_df,
+        "threshold_metrics_df": threshold_df,
+        "best_threshold": best_threshold
+    }
 
 y_pred = (y_prob >= best_threshold).astype(int)
 
